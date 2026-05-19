@@ -31,10 +31,12 @@ def login_required(f):
 last_gsheet_url = None
 last_sync_time = None
 last_sync_hash = None
+last_sync_data = None  # Store last synced data for comparison
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 DATA_FILE = os.path.join(DATA_DIR, 'debtors.json')
+GSHEET_CONFIG_FILE = os.path.join(DATA_DIR, 'gsheet_config.json')
 
 BUCKETS = [
     {'key': 'lt30',    'label': '< 30 Days',     'col': 5,  'min': 0,   'max': 29},
@@ -44,6 +46,28 @@ BUCKETS = [
     {'key': '120_180', 'label': '120 – 180 Days','col': 13, 'min': 120, 'max': 179},
     {'key': 'gt180',   'label': '> 180 Days',    'col': 15, 'min': 180, 'max': 9999},
 ]
+
+def load_gsheet_config():
+    """Load saved Google Sheet configuration"""
+    if os.path.exists(GSHEET_CONFIG_FILE):
+        try:
+            with open(GSHEET_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return None
+
+def save_gsheet_config(url, sync_time, data_hash):
+    """Save Google Sheet configuration"""
+    config = {
+        'url': url,
+        'sync_time': sync_time,
+        'data_hash': data_hash,
+        'last_sync': datetime.now().isoformat()
+    }
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(GSHEET_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
 
 def parse_excel(filepath):
     """Parse Excel file with proper error handling and column detection"""
@@ -176,6 +200,10 @@ def get_summary(parties):
         'total_parties': len(parties)
     }
 
+def get_data_hash(parties):
+    """Generate hash of the data for change detection"""
+    return hashlib.md5(json.dumps(parties, sort_keys=True).encode()).hexdigest()
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -199,7 +227,13 @@ def logout():
 def dashboard():
     parties = load_data()
     summary = get_summary(parties)
-    return render_template('dashboard.html', summary=summary, buckets=BUCKETS, user=session['user'])
+    gsheet_config = load_gsheet_config()
+    return render_template('dashboard.html', 
+                         summary=summary, 
+                         buckets=BUCKETS, 
+                         user=session['user'],
+                         gsheet_connected=gsheet_config is not None,
+                         last_sync_time=gsheet_config.get('sync_time') if gsheet_config else None)
 
 @app.route('/bucket/<bucket_key>')
 @login_required
@@ -234,58 +268,41 @@ def api_summary():
     parties = load_data()
     return jsonify(get_summary(parties))
 
-@app.route('/api/upload', methods=['POST'])
+@app.route('/api/refresh-data', methods=['GET', 'POST'])
 @login_required
-def upload_excel():
-    """Handle Excel file upload"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
+def refresh_data():
+    """API endpoint to refresh data from Google Sheets"""
+    config = load_gsheet_config()
     
-    f = request.files['file']
-    if f.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    if not f.filename.endswith(('.xlsx', '.xls')):
-        return jsonify({'error': 'Please upload an Excel file (.xlsx or .xls)'}), 400
-    
-    # Save to temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-        f.save(tmp.name)
-        tmp_path = tmp.name
+    if not config or not config.get('url'):
+        return jsonify({
+            'success': False, 
+            'error': 'No Google Sheet connected. Please connect a sheet first.'
+        }), 400
     
     try:
-        parties = parse_excel(tmp_path)
-        if not parties:
-            return jsonify({'error': 'No valid data found in the file. Please check the file format.'}), 400
+        # Re-sync from the saved URL
+        result = sync_from_url(config['url'])
         
-        save_data(parties)
-        summary = get_summary(parties)
-        
-        return jsonify({
-            'success': True, 
-            'message': f'Successfully loaded {len(parties)} parties',
-            'summary': summary
-        })
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': f'Data refreshed successfully! Loaded {result["parties_count"]} parties.',
+                'summary': result['summary'],
+                'has_changes': result.get('has_changes', True)
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to refresh data')
+            }), 400
+            
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        # Clean up temp file
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/google-sheet', methods=['POST'])
-@login_required
-def sync_google_sheet():
-    """Sync from Google Sheets with URL storage and auto-refresh support"""
+def sync_from_url(sheet_url):
+    """Sync data from a Google Sheet URL"""
     global last_gsheet_url, last_sync_time, last_sync_hash
-    
-    data = request.get_json()
-    sheet_url = data.get('url', '').strip()
-    
-    if not sheet_url:
-        return jsonify({'error': 'No URL provided'}), 400
     
     # Extract sheet ID from URL
     sheet_id = None
@@ -302,7 +319,7 @@ def sync_google_sheet():
             break
     
     if not sheet_id:
-        return jsonify({'error': 'Could not extract sheet ID from URL. Please check the URL format.'}), 400
+        return {'success': False, 'error': 'Could not extract sheet ID from URL'}
     
     try:
         # Download and parse the sheet
@@ -317,19 +334,16 @@ def sync_google_sheet():
         
         content_type = response.headers.get('Content-Type', '')
         if 'text/html' in content_type or '<html' in response.text[:200].lower():
-            return jsonify({
-                'error': 'Google Sheets access denied. Please ensure the sheet is shared with "Anyone with the link can view". Go to File → Share → Change to "Anyone with the link" → Viewer.'
-            }), 400
+            return {
+                'success': False,
+                'error': 'Google Sheets access denied. Please ensure the sheet is shared with "Anyone with the link can view".'
+            }
         
         if response.status_code != 200:
-            return jsonify({
-                'error': f'Failed to download sheet (HTTP {response.status_code}). Make sure the sheet is publicly shared.'
-            }), 400
-        
-        if len(response.content) < 1000:
-            return jsonify({
-                'error': 'Downloaded file is empty. Please check if the sheet contains data.'
-            }), 400
+            return {
+                'success': False,
+                'error': f'Failed to download sheet (HTTP {response.status_code})'
+            }
         
         # Save to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
@@ -340,114 +354,118 @@ def sync_google_sheet():
             parties = parse_excel(tmp_path)
             
             if not parties:
-                return jsonify({
-                    'error': 'No valid party data found in the sheet. Please check the format matches the expected template.'
-                }), 400
+                return {
+                    'success': False,
+                    'error': 'No valid party data found in the sheet'
+                }
             
-            # Calculate hash of the data for change detection
-            data_hash = hashlib.md5(json.dumps(parties, sort_keys=True).encode()).hexdigest()
+            # Check if data has changed
+            current_hash = get_data_hash(parties)
+            old_parties = load_data()
+            old_hash = get_data_hash(old_parties)
+            
+            has_changes = (current_hash != old_hash)
             
             save_data(parties)
             
             # Store sync info
             last_gsheet_url = sheet_url
             last_sync_time = datetime.now().isoformat()
-            last_sync_hash = data_hash
+            last_sync_hash = current_hash
+            
+            # Save config
+            save_gsheet_config(sheet_url, last_sync_time, current_hash)
             
             summary = get_summary(parties)
             
-            return jsonify({
+            return {
                 'success': True,
-                'message': f'Successfully synced {len(parties)} parties from Google Sheets',
+                'parties_count': len(parties),
                 'summary': summary,
-                'sync_time': last_sync_time,
-                'data_hash': data_hash
-            })
+                'has_changes': has_changes,
+                'sync_time': last_sync_time
+            }
         finally:
             try:
                 os.unlink(tmp_path)
             except:
                 pass
                 
-    except requests.exceptions.Timeout:
-        return jsonify({'error': 'Request timeout. Please check your internet connection.'}), 500
-    except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'Connection error. Please check your internet connection.'}), 500
     except Exception as e:
-        return jsonify({'error': f'Error syncing sheet: {str(e)}'}), 500
+        return {'success': False, 'error': str(e)}
+
+@app.route('/api/google-sheet', methods=['POST'])
+@login_required
+def sync_google_sheet():
+    """Sync from Google Sheets and save configuration"""
+    data = request.get_json()
+    sheet_url = data.get('url', '').strip()
+    
+    if not sheet_url:
+        return jsonify({'error': 'No URL provided'}), 400
+    
+    result = sync_from_url(sheet_url)
+    
+    if result['success']:
+        return jsonify({
+            'success': True,
+            'message': f'Successfully connected and synced {result["parties_count"]} parties from Google Sheets',
+            'summary': result['summary'],
+            'sync_time': result.get('sync_time'),
+            'has_changes': result.get('has_changes', True)
+        })
+    else:
+        return jsonify({'error': result['error']}), 400
+
+@app.route('/api/check-connection', methods=['GET'])
+@login_required
+def check_connection():
+    """Check if Google Sheet is connected and get last sync info"""
+    config = load_gsheet_config()
+    
+    if config:
+        return jsonify({
+            'connected': True,
+            'last_sync_time': config.get('sync_time'),
+            'url': config.get('url')
+        })
+    else:
+        return jsonify({'connected': False})
 
 @app.route('/api/auto-refresh', methods=['POST'])
 @login_required
 def auto_refresh():
     """Auto-refresh data from last used Google Sheet"""
-    global last_gsheet_url
+    config = load_gsheet_config()
     
-    if not last_gsheet_url:
+    if not config or not config.get('url'):
         return jsonify({'success': False, 'error': 'No Google Sheet configured'}), 400
     
-    # Reuse the sync logic
-    try:
-        # Extract sheet ID
-        sheet_id = None
-        patterns = [
-            r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
-            r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, last_gsheet_url)
-            if match:
-                sheet_id = match.group(1)
-                break
-        
-        if not sheet_id:
-            return jsonify({'success': False, 'error': 'Invalid sheet URL'}), 400
-        
-        # Download and parse
-        export_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        response = requests.get(export_url, headers=headers, allow_redirects=True, timeout=30)
-        
-        if response.status_code != 200:
-            return jsonify({'success': False, 'error': 'Cannot access sheet'}), 400
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(response.content)
-            tmp_path = tmp.name
-        
-        try:
-            parties = parse_excel(tmp_path)
-            if parties:
-                save_data(parties)
-                summary = get_summary(parties)
-                return jsonify({
-                    'success': True,
-                    'message': f'Auto-refreshed {len(parties)} parties',
-                    'summary': summary
-                })
-            else:
-                return jsonify({'success': False, 'error': 'No data found'}), 400
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-                
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    result = sync_from_url(config['url'])
+    
+    if result['success']:
+        return jsonify({
+            'success': True,
+            'message': f'Auto-refreshed {result["parties_count"]} parties',
+            'summary': result['summary'],
+            'has_changes': result.get('has_changes', False)
+        })
+    else:
+        return jsonify({'success': False, 'error': result.get('error', 'Auto-refresh failed')}), 500
 
 @app.route('/api/check-updates', methods=['POST'])
 @login_required
 def check_updates():
     """Check if Google Sheet has been updated"""
-    global last_gsheet_url, last_sync_hash
+    config = load_gsheet_config()
+    sheet_url = None
     
-    data = request.get_json()
-    sheet_url = data.get('url', '')
+    if request.is_json:
+        data = request.get_json()
+        sheet_url = data.get('url', '')
     
-    if not sheet_url and last_gsheet_url:
-        sheet_url = last_gsheet_url
+    if not sheet_url and config:
+        sheet_url = config.get('url')
     
     if not sheet_url:
         return jsonify({'has_updates': False, 'error': 'No sheet URL configured'}), 400
@@ -477,22 +495,23 @@ def check_updates():
         if response.status_code != 200:
             return jsonify({'has_updates': False, 'error': 'Cannot access sheet'}), 400
         
-        # Quick check - just get first few rows to see if data changed
+        # Quick check - just get first few rows for comparison
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             tmp.write(response.content)
             tmp_path = tmp.name
         
         try:
-            # Read just first 50 rows for quick comparison
-            df = pd.read_excel(tmp_path, nrows=50)
+            # Read first 100 rows for quick comparison
+            df = pd.read_excel(tmp_path, nrows=100)
             current_hash = hashlib.md5(df.to_string().encode()).hexdigest()
             
-            has_updates = (last_sync_hash != current_hash) if last_sync_hash else True
+            last_hash = config.get('data_hash') if config else None
+            has_updates = (last_hash != current_hash) if last_hash else True
             
             return jsonify({
                 'has_updates': has_updates,
-                'last_sync_time': last_sync_time,
-                'message': 'Updates available!' if has_updates else 'Data is up to date'
+                'last_sync_time': config.get('sync_time') if config else None,
+                'message': 'Updates available! Click refresh to sync.' if has_updates else 'Data is up to date'
             })
         finally:
             try:
@@ -564,6 +583,7 @@ def api_bucket_parties(bucket_key):
     return jsonify(result)
 
 
+    
 @app.route('/api/send-whatsapp-bulk', methods=['POST'])
 @login_required
 def send_whatsapp_bulk():
@@ -627,7 +647,16 @@ if __name__ == '__main__':
     # Create data directory if it doesn't exist
     os.makedirs(DATA_DIR, exist_ok=True)
     
-    # Load sample data if available
+    # Load saved Google Sheet configuration
+    saved_config = load_gsheet_config()
+    if saved_config:
+        print(f'✓ Found saved Google Sheet configuration from {saved_config.get("sync_time", "unknown time")}')
+        # Optionally auto-sync on startup
+        # result = sync_from_url(saved_config['url'])
+        # if result['success']:
+        #     print(f'✓ Auto-synced {result["parties_count"]} parties on startup')
+    
+    # Load sample data if available and no data exists
     if not os.path.exists(DATA_FILE):
         try:
             sample_paths = [
