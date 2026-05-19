@@ -1,0 +1,474 @@
+{% extends "base.html" %}
+{% block title %}{{ bucket_label }} – Maktronic Debtors{% endblock %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+{% set bucket_colors = {'lt30':'#10b981','30_60':'#60a5fa','60_90':'#a78bfa','90_120':'#fcd34d','120_180':'#fb923c','gt180':'#f87171'} %}
+{% set bucket_color = bucket_colors.get(bucket_key, '#60a5fa') %}
+
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="/" style="color:var(--muted);text-decoration:none;font-size:20px;line-height:1">‹</a>
+    <div>
+      <div class="topbar-title">{{ bucket_label }}</div>
+      <div class="topbar-sub">{{ parties|length }} parties · ₹ {{ '{:,.2f}'.format(bucket_total) }} outstanding</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <input type="text" id="filterInput" placeholder="Filter parties..." oninput="filterParties(this.value)"
+      style="background:var(--card);border:1px solid var(--border);border-radius:8px;color:#fff;padding:8px 14px;font-size:13px;outline:none;width:200px">
+    <!-- WhatsApp Bulk Send Button -->
+    <button class="btn btn-whatsapp" id="waBulkBtn" onclick="openWaModal()" style="display:none">
+      💬 Send WhatsApp (<span id="selectedCount">0</span>)
+    </button>
+  </div>
+</div>
+
+<div class="page-content">
+  <!-- Mini Stats -->
+  <div class="stat-grid" style="grid-template-columns:repeat(3,1fr)">
+    <div class="stat-card blue">
+      <div class="stat-label">Total Parties</div>
+      <div class="stat-value accent">{{ parties|length }}</div>
+      <div class="stat-sub">In this bucket</div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-label">Bucket Total</div>
+      <div class="stat-value danger">₹ {{ '{:,.2f}'.format(bucket_total) }}</div>
+      <div class="stat-sub">In {{ bucket_label }}</div>
+    </div>
+    <div class="stat-card gold">
+      <div class="stat-label">Avg. Per Party</div>
+      <div class="stat-value warn">
+        ₹ {{ '{:,.2f}'.format(bucket_total / parties|length) if parties|length > 0 else '0.00' }}
+      </div>
+      <div class="stat-sub">Average outstanding</div>
+    </div>
+  </div>
+
+  <!-- Chart Row -->
+  <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:20px;margin-bottom:20px">
+    <!-- Donut: top 5 parties -->
+    <div class="card" style="padding:24px">
+      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">Top Parties by Amount</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Largest outstanding in this bucket</div>
+      <div style="height:200px;display:flex;align-items:center;justify-content:center">
+        <canvas id="partyDonut"></canvas>
+      </div>
+    </div>
+    <!-- Bar: all parties (scrollable within chart) -->
+    <div class="card" style="padding:24px">
+      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">Amount Distribution</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Top 10 parties in this bucket</div>
+      <div style="height:210px">
+        <canvas id="partyBar"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Party Table with Checkboxes -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:15px;font-weight:700;color:#fff">
+        📋 Parties in {{ bucket_label }}
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"
+            style="width:15px;height:15px;accent-color:{{ bucket_color }};cursor:pointer">
+          Select All
+        </label>
+        <span style="font-size:12px;color:var(--muted)" id="selectionInfo">0 selected</span>
+      </div>
+    </div>
+
+    <div id="partyTableWrap">
+      <table style="width:100%;border-collapse:collapse" id="partyTable">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="width:36px;padding:10px 8px;text-align:center"></th>
+            <th style="padding:10px 12px;text-align:left;font-size:12px;color:var(--muted);font-weight:600">PARTY</th>
+            <th style="padding:10px 12px;text-align:left;font-size:12px;color:var(--muted);font-weight:600">LOCATION</th>
+            <th style="padding:10px 12px;text-align:left;font-size:12px;color:var(--muted);font-weight:600">CONTACT</th>
+            <th style="padding:10px 12px;text-align:left;font-size:12px;color:var(--muted);font-weight:600">PHONE</th>
+            <th style="padding:10px 12px;text-align:right;font-size:12px;color:var(--muted);font-weight:600">BUCKET AMT</th>
+            <th style="padding:10px 12px;text-align:right;font-size:12px;color:var(--muted);font-weight:600">TOTAL PENDING</th>
+            <th style="padding:10px 12px;text-align:center;font-size:12px;color:var(--muted);font-weight:600">ACTION</th>
+          </tr>
+        </thead>
+        <tbody id="partyTbody">
+          {% for p in parties %}
+          <tr class="party-row" data-name="{{ p.name }}" data-phone="{{ p.phone }}"
+              data-bucket="{{ p.bucket_amount }}" data-total="{{ p.total_pending }}"
+              style="border-bottom:1px solid var(--border);transition:background 0.15s"
+              onmouseover="this.style.background='rgba(255,255,255,0.03)'"
+              onmouseout="this.style.background=''">
+            <td style="padding:12px 8px;text-align:center">
+              <input type="checkbox" class="party-check" 
+                data-name="{{ p.name }}" data-phone="{{ p.phone }}"
+                data-bucket="{{ p.bucket_amount }}" data-total="{{ p.total_pending }}"
+                onchange="updateSelection()"
+                style="width:15px;height:15px;accent-color:{{ bucket_color }};cursor:pointer">
+            </td>
+            <td style="padding:12px">
+              <a href="/party/{{ p.name | urlencode }}" style="font-size:13px;font-weight:600;color:#fff;text-decoration:none">
+                {{ p.name }}
+              </a>
+            </td>
+            <td style="padding:12px;font-size:12px;color:var(--muted)">{{ p.location or '—' }}</td>
+            <td style="padding:12px;font-size:12px;color:var(--muted)">{{ p.contact_person or '—' }}</td>
+            <td style="padding:12px;font-size:12px;color:var(--muted)">
+              {% if p.phone %}
+                <a href="tel:{{ p.phone }}" style="color:var(--muted);text-decoration:none">{{ p.phone }}</a>
+              {% else %}—{% endif %}
+            </td>
+            <td style="padding:12px;text-align:right;font-size:13px;font-weight:700;color:{{ bucket_color }}">
+              ₹ {{ '{:,.2f}'.format(p.bucket_amount) }}
+            </td>
+            <td style="padding:12px;text-align:right;font-size:13px;color:#ef4444;font-weight:600">
+              ₹ {{ '{:,.2f}'.format(p.total_pending) }}
+            </td>
+            <td style="padding:12px;text-align:center">
+              {% if p.phone %}
+              <a href="https://wa.me/91{{ p.phone | replace(' ','') | replace('-','') | replace('+','') | replace('91','',1) }}" 
+                 target="_blank" title="Send WhatsApp"
+                 style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:#25D366;color:#fff;text-decoration:none;font-size:14px">
+                💬
+              </a>
+              {% else %}
+              <span style="color:var(--muted);font-size:11px">No phone</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Bottom action bar (appears when items selected) -->
+    <div id="selectionBar" style="display:none;margin-top:16px;padding:14px 16px;background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.3);border-radius:10px;display:none;align-items:center;justify-content:space-between">
+      <div style="font-size:13px;color:#25D366;font-weight:600">
+        <span id="barCount">0</span> parties selected &nbsp;·&nbsp; Total pending: <span id="barTotal">₹0</span>
+      </div>
+      <button class="btn btn-whatsapp" onclick="openWaModal()">
+        💬 Send WhatsApp to Selected
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- WhatsApp Message Modal -->
+<div class="modal-overlay" id="waModal">
+  <div class="modal" style="max-width:520px;width:95%">
+    <h3 style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:22px">💬</span> Send WhatsApp Message
+    </h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px">
+      Compose your message. <strong style="color:#25D366">{name}</strong>, <strong style="color:#25D366">{bucket_amount}</strong> and <strong style="color:#25D366">{total_pending}</strong> are auto-filled per party.
+    </p>
+
+    <!-- Template Picker -->
+    <div style="margin-bottom:14px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Quick Templates</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <button onclick="setTemplate('gentle')" class="tpl-btn">🙏 Gentle Reminder</button>
+        <button onclick="setTemplate('firm')" class="tpl-btn">⚠️ Firm Notice</button>
+        <button onclick="setTemplate('final')" class="tpl-btn">🚨 Final Notice</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Message (per party)</label>
+      <textarea id="waMessage" rows="7" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;color:#fff;padding:12px;font-size:13px;line-height:1.6;resize:vertical;font-family:inherit;outline:none"></textarea>
+    </div>
+
+    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;margin-bottom:16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600">PREVIEW (first party)</div>
+      <div id="waPreview" style="font-size:13px;color:#d1d5db;white-space:pre-wrap;line-height:1.6"></div>
+    </div>
+
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+      📱 This will open WhatsApp Web for each party one by one. 
+      <span id="waCount" style="color:#25D366;font-weight:600"></span> windows will open.
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeWaModal()">Cancel</button>
+      <button class="btn btn-whatsapp" onclick="sendWhatsApp()">
+        💬 Open WhatsApp for All Selected
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+.btn-whatsapp {
+  background: #25D366;
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.btn-whatsapp:hover { background: #1ebe5d; }
+
+.tpl-btn {
+  background: rgba(255,255,255,0.07);
+  color: #d1d5db;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.tpl-btn:hover { background: rgba(255,255,255,0.13); color: #fff; }
+</style>
+
+<script>
+/* ─── Chart Data ─── */
+const parties = [
+  {% for p in parties %}
+  { name: {{ p.name | tojson }}, bucket: {{ p.bucket_amount }}, total: {{ p.total_pending }} }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+
+const bucketColor = '{{ bucket_color }}';
+const top5 = [...parties].sort((a,b)=>b.bucket-a.bucket).slice(0,5);
+const top10 = [...parties].sort((a,b)=>b.bucket-a.bucket).slice(0,10);
+
+const palette = ['{{ bucket_color }}','#60a5fa','#a78bfa','#fcd34d','#f87171'];
+const mutedPalette = palette.map(c=>c+'99');
+
+/* Donut */
+new Chart(document.getElementById('partyDonut').getContext('2d'), {
+  type: 'doughnut',
+  data: {
+    labels: top5.map(p=>p.name.length>20?p.name.slice(0,18)+'…':p.name),
+    datasets: [{ data: top5.map(p=>p.bucket), backgroundColor: palette, borderWidth: 2, borderColor:'rgba(0,0,0,0.3)', hoverOffset:6 }]
+  },
+  options: {
+    cutout:'65%', responsive:true, maintainAspectRatio:false,
+    plugins: {
+      legend:{ position:'right', labels:{ color:'#9ca3af', font:{size:10}, boxWidth:10, padding:8 } },
+      tooltip:{ callbacks:{ label:ctx=>` ₹${ctx.parsed.toLocaleString('en-IN',{minimumFractionDigits:2})}` } }
+    }
+  }
+});
+
+/* Bar */
+new Chart(document.getElementById('partyBar').getContext('2d'), {
+  type: 'bar',
+  data: {
+    labels: top10.map(p=>p.name.length>14?p.name.slice(0,13)+'…':p.name),
+    datasets: [{
+      label: 'Bucket Amount',
+      data: top10.map(p=>p.bucket),
+      backgroundColor: bucketColor+'bb',
+      borderRadius: 5,
+      borderSkipped: false
+    }]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>` ₹${ctx.parsed.y.toLocaleString('en-IN',{minimumFractionDigits:2})}` } } },
+    scales: {
+      x:{ ticks:{ color:'#9ca3af', font:{size:9}, maxRotation:35, minRotation:20 }, grid:{color:'rgba(255,255,255,0.04)'} },
+      y:{ ticks:{ color:'#9ca3af', font:{size:10}, callback:v=>'₹'+(v>=100000?(v/100000).toFixed(1)+'L':v>=1000?(v/1000).toFixed(0)+'K':v) }, grid:{color:'rgba(255,255,255,0.07)'} }
+    }
+  }
+});
+
+/* ─── Selection Logic ─── */
+function getChecked() {
+  return [...document.querySelectorAll('.party-check:checked')];
+}
+
+function updateSelection() {
+  const checked = getChecked();
+  const count = checked.length;
+  const total = checked.reduce((s,cb)=>s+parseFloat(cb.dataset.total||0), 0);
+
+  document.getElementById('selectedCount').textContent = count;
+  document.getElementById('selectionInfo').textContent = count + ' selected';
+
+  const bar = document.getElementById('selectionBar');
+  const btn = document.getElementById('waBulkBtn');
+
+  if (count > 0) {
+    bar.style.display = 'flex';
+    btn.style.display = 'inline-flex';
+    document.getElementById('barCount').textContent = count;
+    document.getElementById('barTotal').textContent = '₹' + total.toLocaleString('en-IN', {minimumFractionDigits:2});
+  } else {
+    bar.style.display = 'none';
+    btn.style.display = 'none';
+  }
+
+  // Sync "Select All" state
+  const allBoxes = document.querySelectorAll('.party-check');
+  document.getElementById('selectAll').indeterminate = count > 0 && count < allBoxes.length;
+  document.getElementById('selectAll').checked = count === allBoxes.length;
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.party-check:not(.hidden-row .party-check)').forEach(cb => cb.checked = checked);
+  updateSelection();
+}
+
+/* ─── Filter ─── */
+function filterParties(q) {
+  const rows = document.querySelectorAll('.party-row');
+  const term = q.toLowerCase();
+  rows.forEach(row => {
+    const name = row.dataset.name.toLowerCase();
+    const phone = (row.dataset.phone||'').toLowerCase();
+    const match = !term || name.includes(term) || phone.includes(term);
+    row.style.display = match ? '' : 'none';
+    row.classList.toggle('hidden-row', !match);
+    if (!match) row.querySelector('.party-check').checked = false;
+  });
+  updateSelection();
+}
+
+/* ─── WhatsApp Modal ─── */
+const templates = {
+  gentle: `Dear {name},
+
+We hope you are doing well.
+
+This is a gentle reminder regarding your outstanding payment of ₹{total_pending} with Maktronic.
+
+Your overdue amount in the current aging bucket is ₹{bucket_amount}.
+
+We would appreciate it if you could arrange the payment at the earliest convenience.
+
+For any queries, please feel free to contact us.
+
+Warm regards,
+Maktronic Team`,
+
+  firm: `Dear {name},
+
+This is an important notice regarding your outstanding dues.
+
+📌 Total Pending: ₹{total_pending}
+⏰ Overdue Amount: ₹{bucket_amount}
+
+Your account has exceeded the agreed credit period. We request you to clear the dues immediately to avoid any disruption in services.
+
+Please make the payment at the earliest or contact us to discuss a payment plan.
+
+Regards,
+Maktronic Team`,
+
+  final: `Dear {name},
+
+⚠️ FINAL NOTICE ⚠️
+
+Despite repeated reminders, your outstanding payment remains unpaid:
+
+Total Due: ₹{total_pending}
+Overdue: ₹{bucket_amount}
+
+This is your FINAL NOTICE. Please clear all outstanding dues within 48 hours to avoid legal action and service suspension.
+
+Contact us immediately: [Your Phone Number]
+
+Maktronic Management`
+};
+
+function setTemplate(key) {
+  document.getElementById('waMessage').value = templates[key];
+  updatePreview();
+}
+
+function fillMessage(msg, party) {
+  return msg
+    .replace(/{name}/g, party.name)
+    .replace(/{bucket_amount}/g, '₹' + parseFloat(party.bucket).toLocaleString('en-IN', {minimumFractionDigits:2}))
+    .replace(/{total_pending}/g, '₹' + parseFloat(party.total).toLocaleString('en-IN', {minimumFractionDigits:2}));
+}
+
+function updatePreview() {
+  const msg = document.getElementById('waMessage').value;
+  const checked = getChecked();
+  if (!msg || !checked.length) { document.getElementById('waPreview').textContent = ''; return; }
+  const first = { name: checked[0].dataset.name, bucket: checked[0].dataset.bucket, total: checked[0].dataset.total };
+  document.getElementById('waPreview').textContent = fillMessage(msg, first);
+}
+
+document.getElementById('waMessage') && document.getElementById('waMessage').addEventListener('input', updatePreview);
+
+let selectedParties = [];
+
+function openWaModal() {
+  const checked = getChecked();
+  if (!checked.length) { showToast('Please select at least one party', 'error'); return; }
+
+  selectedParties = checked.map(cb => ({
+    name: cb.dataset.name,
+    phone: cb.dataset.phone,
+    bucket: cb.dataset.bucket,
+    total: cb.dataset.total
+  }));
+
+  document.getElementById('waCount').textContent = selectedParties.length + ' parties';
+  if (!document.getElementById('waMessage').value) setTemplate('gentle');
+  updatePreview();
+  document.getElementById('waModal').classList.add('open');
+}
+
+function closeWaModal() {
+  document.getElementById('waModal').classList.remove('open');
+}
+
+function normalizePhone(raw) {
+  // Remove spaces, dashes, dots, parentheses
+  let p = (raw||'').replace(/[\s\-\.\(\)]/g,'');
+  // Remove leading +
+  p = p.replace(/^\+/,'');
+  // If starts with 91 and length is 12, strip country code
+  if (p.startsWith('91') && p.length === 12) p = p.slice(2);
+  // Add India country code
+  return '91' + p;
+}
+
+function sendWhatsApp() {
+  const msg = document.getElementById('waMessage').value.trim();
+  if (!msg) { showToast('Please enter a message', 'error'); return; }
+
+  const noPhone = selectedParties.filter(p => !p.phone);
+  if (noPhone.length) {
+    showToast(`${noPhone.length} parties have no phone number and will be skipped.`, 'error');
+  }
+
+  const validParties = selectedParties.filter(p => p.phone && p.phone.trim());
+  if (!validParties.length) { showToast('No parties have phone numbers', 'error'); return; }
+
+  closeWaModal();
+  showToast(`Opening WhatsApp for ${validParties.length} parties...`, 'success');
+
+  validParties.forEach((party, i) => {
+    setTimeout(() => {
+      const text = fillMessage(msg, party);
+      const phone = normalizePhone(party.phone);
+      const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+      window.open(url, '_blank');
+    }, i * 1200); // stagger 1.2s between each to avoid popup blockers
+  });
+}
+
+/* Close modal on overlay click */
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+});
+
+/* Init */
+setTemplate('gentle');
+</script>
+{% endblock %}
