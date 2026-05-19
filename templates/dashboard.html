@@ -2,20 +2,22 @@
 {% block title %}Dashboard – Maktronic Debtors{% endblock %}
 
 {% block content %}
-<!-- Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
 <div class="topbar">
-  <div>
-    <div class="topbar-title">📊 Aging Buckets Dashboard</div>
-    <div class="topbar-sub">Sundry Debtors Outstanding Report</div>
-  </div>
-  <div style="display:flex;gap:10px;align-items:center">
-    <div class="search-wrap">
-      <input type="text" id="searchInput" placeholder="Search party..." oninput="liveSearch(this.value)">
+  <div class="topbar-left">
+    <button class="hamburger" onclick="openSidebar()" aria-label="Open menu">☰</button>
+    <div>
+      <div class="topbar-title">📊 Aging Dashboard</div>
+      <div class="topbar-sub">Sundry Debtors Outstanding Report</div>
     </div>
-    <button class="btn btn-outline" onclick="showUploadModal()">⬆ Upload Excel</button>
-    <button class="btn btn-outline" onclick="showGSheetModal()">🔗 Google Sheets</button>
+  </div>
+  <div class="topbar-actions">
+    <div class="search-wrap">
+      <input type="text" id="searchInput" placeholder="Search party…" oninput="liveSearch(this.value)">
+    </div>
+    <button class="btn btn-outline" onclick="showUploadModal()">⬆ Upload</button>
+    <button class="btn btn-outline" onclick="showGSheetModal()">🔗 Sheets</button>
   </div>
 </div>
 
@@ -28,13 +30,13 @@
       <div class="stat-sub">Active debtors</div>
     </div>
     <div class="stat-card red">
-      <div class="stat-label">Total Pending Bills</div>
-      <div class="stat-value danger" id="grandTotal">₹ {{ '{:,.2f}'.format(summary.grand_total) }}</div>
-      <div class="stat-sub">Outstanding receivables</div>
+      <div class="stat-label">Total Pending</div>
+      <div class="stat-value danger" id="grandTotal" style="font-size:18px">₹ {{ '{:,.2f}'.format(summary.grand_total) }}</div>
+      <div class="stat-sub">Outstanding</div>
     </div>
-    <div class="stat-card gold">
-      <div class="stat-label">Critical (>120 Days)</div>
-      <div class="stat-value warn" id="criticalAmt">
+    <div class="stat-card gold" style="grid-column:span 2">
+      <div class="stat-label">Critical (&gt;120 Days)</div>
+      <div class="stat-value warn" id="criticalAmt" style="font-size:18px">
         ₹ {{ '{:,.2f}'.format((summary.totals.get('120_180', 0) + summary.totals.get('gt180', 0))) }}
       </div>
       <div class="stat-sub">{{ summary.counts.get('120_180', 0) + summary.counts.get('gt180', 0) }} parties need action</div>
@@ -42,26 +44,26 @@
   </div>
 
   <!-- Charts Row -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+  <div class="charts-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <!-- Donut Chart -->
-    <div class="card" style="padding:24px">
-      <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:4px">🍩 Aging Distribution</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:16px">Amount split across aging buckets</div>
-      <div style="position:relative;height:220px;display:flex;align-items:center;justify-content:center">
+    <div class="card" style="padding:20px">
+      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:2px">🍩 Distribution</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">By aging bucket</div>
+      <div style="position:relative;height:180px;display:flex;align-items:center;justify-content:center">
         <canvas id="donutChart"></canvas>
         <div id="donutCenter" style="position:absolute;text-align:center;pointer-events:none">
-          <div style="font-size:11px;color:var(--muted)">Total</div>
-          <div style="font-size:15px;font-weight:700;color:#fff">₹{{ '{:,.0f}'.format(summary.grand_total) }}</div>
+          <div style="font-size:10px;color:var(--muted)">Total</div>
+          <div style="font-size:13px;font-weight:700;color:#fff">₹{{ '{:,.0f}'.format(summary.grand_total) }}</div>
         </div>
       </div>
-      <div id="donutLegend" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;justify-content:center"></div>
+      <div id="donutLegend" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;justify-content:center"></div>
     </div>
 
     <!-- Bar Chart -->
-    <div class="card" style="padding:24px">
-      <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:4px">📊 Bucket Comparison</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:16px">Amount (₹) per aging bucket</div>
-      <div style="height:240px">
+    <div class="card" style="padding:20px">
+      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:2px">📊 Buckets</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Amount per bucket</div>
+      <div style="height:200px">
         <canvas id="barChart"></canvas>
       </div>
     </div>
@@ -69,10 +71,10 @@
 
   <!-- Aging Breakdown -->
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:16px;font-weight:700;color:#fff">📅 Aging Breakdown</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:2px">Click any row to view & message parties in that bucket</div>
+        <div style="font-size:15px;font-weight:700;color:#fff">📅 Aging Breakdown</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">Tap to view parties in each bucket</div>
       </div>
     </div>
     <div class="bucket-list">
@@ -84,12 +86,12 @@
       {% set pct = (amt / summary.grand_total * 100) if summary.grand_total > 0 else 0 %}
       <a href="/bucket/{{ b.key }}" class="bucket-row">
         <div class="bucket-label">{{ b.label }}</div>
-        <div class="bucket-badge {{ badge_classes[b.key] }}">{{ cnt }} parties</div>
+        <div class="bucket-badge {{ badge_classes[b.key] }}">{{ cnt }}</div>
         <div class="bucket-bar-wrap">
           <div class="bucket-bar" style="width:{{ pct }}%;background:{{ bucket_colors[b.key] }}"></div>
         </div>
         <div class="bucket-amount" style="color:{{ bucket_colors[b.key] }}">
-          ₹ {{ '{:,.2f}'.format(amt) }}
+          ₹ {{ '{:,.0f}'.format(amt) }}
         </div>
         <div class="bucket-arrow">›</div>
       </a>
@@ -98,7 +100,7 @@
   </div>
 
   <!-- Search Results -->
-  <div id="searchResults" style="margin-top:20px;display:none">
+  <div id="searchResults" style="margin-top:16px;display:none">
     <div class="card">
       <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:12px">🔍 Search Results</div>
       <div id="searchList"></div>
@@ -110,14 +112,12 @@
 <div class="modal-overlay" id="uploadModal">
   <div class="modal">
     <h3>⬆️ Upload Excel File</h3>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:20px">Upload your Sundry Debtors .xlsx file to refresh the data.</p>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:18px">Upload your Sundry Debtors .xlsx file to refresh the data.</p>
     <div class="form-group">
       <label>Select Excel File (.xlsx or .xls)</label>
       <input type="file" id="excelFile" accept=".xlsx,.xls">
     </div>
-    <div id="uploadProgress" style="display:none; margin: 10px 0; color: var(--accent);">
-      Uploading and processing...
-    </div>
+    <div id="uploadProgress" style="display:none;margin:10px 0;color:var(--accent)">Uploading and processing…</div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeUploadModal()">Cancel</button>
       <button class="btn btn-primary" onclick="uploadFile()">Upload & Process</button>
@@ -129,18 +129,16 @@
 <div class="modal-overlay" id="gsheetModal">
   <div class="modal">
     <h3>🔗 Sync from Google Sheets</h3>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:16px">
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
       1. Open your Google Sheet<br>
-      2. Go to File → Share → Change to "Anyone with the link can view"<br>
-      3. Copy and paste the URL below
+      2. File → Share → "Anyone with the link can view"<br>
+      3. Paste the URL below
     </p>
     <div class="form-group">
       <label>Google Sheets URL</label>
-      <input type="text" id="sheetUrl" placeholder="https://docs.google.com/spreadsheets/d/...">
+      <input type="text" id="sheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…">
     </div>
-    <div id="syncProgress" style="display:none; margin: 10px 0; color: var(--accent);">
-      Syncing from Google Sheets...
-    </div>
+    <div id="syncProgress" style="display:none;margin:10px 0;color:var(--accent)">Syncing…</div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeGSheetModal()">Cancel</button>
       <button class="btn btn-primary" onclick="syncGSheet()">Sync Now</button>
@@ -149,118 +147,70 @@
 </div>
 
 <style>
-/* ── Chart card tweaks ── */
-#donutChart { max-width: 200px; max-height: 200px; }
-.legend-dot { width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0 }
-.legend-item { display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted) }
+#donutChart { max-width: 180px; max-height: 180px; }
+.legend-dot  { width:9px;height:9px;border-radius:50%;display:inline-block;flex-shrink:0 }
+.legend-item { display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted) }
+
+@media (max-width: 600px) {
+  .charts-row { grid-template-columns: 1fr !important; }
+  #barChart { display: none; } /* hide bar on tiny screens, donut is enough */
+}
+@media (max-width: 480px) {
+  .stat-card.gold { grid-column: span 2; }
+}
 </style>
 
 <script>
-/* ── Chart Data from Jinja ── */
-const bucketLabels = [{% for b in buckets %}"{{ b.label }}"{% if not loop.last %},{% endif %}{% endfor %}];
+const bucketLabels  = [{% for b in buckets %}"{{ b.label }}"{% if not loop.last %},{% endif %}{% endfor %}];
 const bucketAmounts = [{% for b in buckets %}{{ summary.totals.get(b.key, 0) }}{% if not loop.last %},{% endif %}{% endfor %}];
 const bucketColors  = ['#10b981','#60a5fa','#a78bfa','#fcd34d','#fb923c','#f87171'];
 
-/* ── Donut Chart ── */
+/* Donut */
 const donutCtx = document.getElementById('donutChart').getContext('2d');
-const donutChart = new Chart(donutCtx, {
+new Chart(donutCtx, {
   type: 'doughnut',
-  data: {
-    labels: bucketLabels,
-    datasets: [{
-      data: bucketAmounts,
-      backgroundColor: bucketColors,
-      borderColor: 'rgba(0,0,0,0.3)',
-      borderWidth: 2,
-      hoverOffset: 8
-    }]
-  },
+  data: { labels: bucketLabels, datasets: [{ data: bucketAmounts, backgroundColor: bucketColors, borderColor: 'rgba(0,0,0,0.3)', borderWidth: 2, hoverOffset: 6 }] },
   options: {
-    cutout: '68%',
-    responsive: true,
-    maintainAspectRatio: false,
+    cutout: '68%', responsive: true, maintainAspectRatio: false,
     plugins: {
       legend: { display: false },
-      tooltip: {
-        callbacks: {
-          label: ctx => ` ₹${ctx.parsed.toLocaleString('en-IN', {minimumFractionDigits:2})}`
-        }
-      }
+      tooltip: { callbacks: { label: ctx => ` ₹${ctx.parsed.toLocaleString('en-IN', {minimumFractionDigits:2})}` } }
     }
   }
 });
 
-/* Donut Legend */
 const legendEl = document.getElementById('donutLegend');
 bucketLabels.forEach((lbl, i) => {
   legendEl.innerHTML += `<div class="legend-item"><span class="legend-dot" style="background:${bucketColors[i]}"></span>${lbl}</div>`;
 });
 
-/* ── Bar Chart ── */
-const barCtx = document.getElementById('barChart').getContext('2d');
-new Chart(barCtx, {
-  type: 'bar',
-  data: {
-    labels: bucketLabels,
-    datasets: [{
-      label: 'Amount (₹)',
-      data: bucketAmounts,
-      backgroundColor: bucketColors,
-      borderRadius: 6,
-      borderSkipped: false
-    }]
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        callbacks: {
-          label: ctx => ` ₹${ctx.parsed.y.toLocaleString('en-IN', {minimumFractionDigits:2})}`
-        }
-      }
-    },
-    scales: {
-      x: {
-        ticks: { color: '#9ca3af', font: { size: 10 } },
-        grid: { color: 'rgba(255,255,255,0.05)' }
-      },
-      y: {
-        ticks: {
-          color: '#9ca3af',
-          font: { size: 10 },
-          callback: v => '₹' + (v >= 100000 ? (v/100000).toFixed(1)+'L' : v >= 1000 ? (v/1000).toFixed(0)+'K' : v)
-        },
-        grid: { color: 'rgba(255,255,255,0.07)' }
+/* Bar */
+const barCtx = document.getElementById('barChart');
+if (barCtx) {
+  new Chart(barCtx.getContext('2d'), {
+    type: 'bar',
+    data: { labels: bucketLabels, datasets: [{ label: 'Amount (₹)', data: bucketAmounts, backgroundColor: bucketColors, borderRadius: 6, borderSkipped: false }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ₹${ctx.parsed.y.toLocaleString('en-IN', {minimumFractionDigits:2})}` } } },
+      scales: {
+        x: { ticks: { color: '#9ca3af', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: { ticks: { color: '#9ca3af', font: { size: 9 }, callback: v => '₹' + (v>=100000?(v/100000).toFixed(1)+'L':v>=1000?(v/1000).toFixed(0)+'K':v) }, grid: { color: 'rgba(255,255,255,0.07)' } }
       }
     }
-  }
-});
+  });
+}
 
-/* ── Search ── */
+/* Search */
 let searchTimer = null;
-
-function showUploadModal() {
-  document.getElementById('uploadModal').classList.add('open');
-}
-function closeUploadModal() {
-  document.getElementById('uploadModal').classList.remove('open');
-  document.getElementById('excelFile').value = '';
-  document.getElementById('uploadProgress').style.display = 'none';
-}
-function showGSheetModal() {
-  document.getElementById('gsheetModal').classList.add('open');
-}
-function closeGSheetModal() {
-  document.getElementById('gsheetModal').classList.remove('open');
-  document.getElementById('sheetUrl').value = '';
-  document.getElementById('syncProgress').style.display = 'none';
-}
+function showUploadModal()  { document.getElementById('uploadModal').classList.add('open'); }
+function closeUploadModal() { document.getElementById('uploadModal').classList.remove('open'); document.getElementById('excelFile').value=''; document.getElementById('uploadProgress').style.display='none'; }
+function showGSheetModal()  { document.getElementById('gsheetModal').classList.add('open'); }
+function closeGSheetModal() { document.getElementById('gsheetModal').classList.remove('open'); document.getElementById('sheetUrl').value=''; document.getElementById('syncProgress').style.display='none'; }
 
 function liveSearch(q) {
   clearTimeout(searchTimer);
-  if (!q.trim()) { document.getElementById('searchResults').style.display = 'none'; return; }
+  if (!q.trim()) { document.getElementById('searchResults').style.display='none'; return; }
   searchTimer = setTimeout(() => {
     fetch('/api/search?q=' + encodeURIComponent(q))
       .then(r => r.json())
@@ -269,55 +219,49 @@ function liveSearch(q) {
         const list = document.getElementById('searchList');
         if (!data.length) { list.innerHTML = '<p style="color:var(--muted);font-size:13px;padding:8px">No parties found.</p>'; return; }
         list.innerHTML = data.map(p => `
-          <a href="/party/${encodeURIComponent(p.name)}" style="display:flex;align-items:center;justify-content:space-between;padding:12px 8px;border-bottom:1px solid var(--border);text-decoration:none;color:inherit">
-            <div>
-              <div style="font-size:14px;font-weight:600;color:#fff">${escapeHtml(p.name)}</div>
-              <div style="font-size:12px;color:var(--muted)">${escapeHtml(p.location||'')} ${p.contact_person?'| '+escapeHtml(p.contact_person):''}</div>
+          <a href="/party/${encodeURIComponent(p.name)}" style="display:flex;align-items:center;justify-content:space-between;padding:12px 4px;border-bottom:1px solid var(--border);text-decoration:none;color:inherit;gap:8px">
+            <div style="min-width:0">
+              <div style="font-size:13px;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</div>
+              <div style="font-size:11px;color:var(--muted)">${escapeHtml(p.location||'')}${p.contact_person?' | '+escapeHtml(p.contact_person):''}</div>
             </div>
-            <div style="font-size:14px;font-weight:700;color:#ef4444">${fmt(p.total_pending)}</div>
+            <div style="font-size:13px;font-weight:700;color:#ef4444;flex-shrink:0">${fmt(p.total_pending)}</div>
           </a>`).join('');
       })
-      .catch(err => { console.error(err); showToast('Search failed','error'); });
+      .catch(() => showToast('Search failed','error'));
   }, 300);
 }
 
 function uploadFile() {
   const file = document.getElementById('excelFile').files[0];
   if (!file) { showToast('Please select a file','error'); return; }
-  if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) { showToast('Please select an Excel file','error'); return; }
-  const fd = new FormData();
-  fd.append('file', file);
+  if (!file.name.match(/\.xlsx?$/i)) { showToast('Please select an Excel file','error'); return; }
+  const fd = new FormData(); fd.append('file', file);
   document.getElementById('uploadProgress').style.display = 'block';
   fetch('/api/upload', { method:'POST', body:fd })
-    .then(r => r.json())
-    .then(d => {
-      document.getElementById('uploadProgress').style.display = 'none';
+    .then(r=>r.json()).then(d => {
+      document.getElementById('uploadProgress').style.display='none';
       if (d.success) { showToast(d.message,'success'); closeUploadModal(); setTimeout(()=>location.reload(),1500); }
       else showToast(d.error||'Upload failed','error');
-    })
-    .catch(err => { document.getElementById('uploadProgress').style.display='none'; showToast('Network error: '+err.message,'error'); });
+    }).catch(err => { document.getElementById('uploadProgress').style.display='none'; showToast('Network error: '+err.message,'error'); });
 }
 
 function syncGSheet() {
   const url = document.getElementById('sheetUrl').value.trim();
-  if (!url) { showToast('Please enter a Google Sheets URL','error'); return; }
+  if (!url) { showToast('Please enter a URL','error'); return; }
   if (!url.includes('docs.google.com/spreadsheets')) { showToast('Please enter a valid Google Sheets URL','error'); return; }
-  document.getElementById('syncProgress').style.display = 'block';
-  fetch('/api/google-sheet',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url}) })
-    .then(r=>r.json())
-    .then(d=>{
+  document.getElementById('syncProgress').style.display='block';
+  fetch('/api/google-sheet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})})
+    .then(r=>r.json()).then(d=>{
       document.getElementById('syncProgress').style.display='none';
-      if(d.success){ showToast(d.message,'success'); closeGSheetModal(); setTimeout(()=>location.reload(),1500); }
+      if(d.success){showToast(d.message,'success');closeGSheetModal();setTimeout(()=>location.reload(),1500);}
       else showToast(d.error||'Sync failed','error');
-    })
-    .catch(err=>{ document.getElementById('syncProgress').style.display='none'; showToast('Network error: '+err.message,'error'); });
+    }).catch(err=>{document.getElementById('syncProgress').style.display='none';showToast('Network error: '+err.message,'error');});
 }
 
-function escapeHtml(text){
-  if(!text)return'';
-  const d=document.createElement('div');d.textContent=text;return d.innerHTML;
+function escapeHtml(text) {
+  if (!text) return '';
+  const d = document.createElement('div'); d.textContent = text; return d.innerHTML;
 }
-
 document.querySelectorAll('.modal-overlay').forEach(el=>{
   el.addEventListener('click',e=>{ if(e.target===el) el.classList.remove('open'); });
 });

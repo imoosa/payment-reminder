@@ -5,65 +5,67 @@
 {% set bucket_colors = {'lt30':'#10b981','30_60':'#60a5fa','60_90':'#a78bfa','90_120':'#fcd34d','120_180':'#fb923c','gt180':'#f87171'} %}
 
 <div class="topbar">
-  <div style="display:flex;align-items:center;gap:12px">
-    <a href="javascript:history.back()" style="color:var(--muted);text-decoration:none;font-size:20px">‹</a>
-    <div>
-      <div class="topbar-title">{{ party.name }}</div>
+  <div class="topbar-left">
+    <button class="hamburger" onclick="openSidebar()" aria-label="Open menu">☰</button>
+    <a href="javascript:history.back()" style="color:var(--muted);text-decoration:none;font-size:22px;line-height:1;flex-shrink:0">‹</a>
+    <div style="min-width:0">
+      <div class="topbar-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ party.name }}</div>
       <div class="topbar-sub">{% if party.location %}📍 {{ party.location }}{% endif %}</div>
     </div>
   </div>
-  <div style="display:flex;gap:10px">
-    <button class="btn btn-danger" onclick="sendReminder()">📧 Send Payment Reminder</button>
+  <div class="topbar-actions">
+    <button class="btn btn-danger" onclick="sendReminder()">📧 Remind</button>
   </div>
 </div>
 
 <div class="page-content">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
+  <!-- Top grid: contact + total outstanding -->
+  <div class="detail-top-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
 
     <!-- Contact Info -->
     <div class="card">
-      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:16px">👤 Contact Details</div>
+      <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:14px">👤 Contact Details</div>
       <table style="width:100%;border-collapse:collapse">
         {% if party.contact_person %}
         <tr>
-          <td style="padding:8px 0;font-size:12px;color:var(--muted);width:40%">Contact Person</td>
-          <td style="padding:8px 0;font-size:13px;color:var(--text);font-weight:500">{{ party.contact_person }}</td>
+          <td style="padding:7px 0;font-size:11px;color:var(--muted);width:40%">Person</td>
+          <td style="padding:7px 0;font-size:13px;color:var(--text);font-weight:500">{{ party.contact_person }}</td>
         </tr>
         {% endif %}
         {% if party.phone %}
         <tr>
-          <td style="padding:8px 0;font-size:12px;color:var(--muted)">Phone</td>
-          <td style="padding:8px 0">
+          <td style="padding:7px 0;font-size:11px;color:var(--muted)">Phone</td>
+          <td style="padding:7px 0">
             <a href="tel:{{ party.phone }}" style="color:var(--accent);font-size:13px;text-decoration:none">{{ party.phone }}</a>
           </td>
         </tr>
         {% endif %}
         {% if party.location %}
         <tr>
-          <td style="padding:8px 0;font-size:12px;color:var(--muted)">Location</td>
-          <td style="padding:8px 0;font-size:13px;color:var(--text)">{{ party.location }}</td>
+          <td style="padding:7px 0;font-size:11px;color:var(--muted)">Location</td>
+          <td style="padding:7px 0;font-size:13px;color:var(--text)">{{ party.location }}</td>
         </tr>
         {% endif %}
         <tr>
-          <td style="padding:8px 0;font-size:12px;color:var(--muted)">Last Updated</td>
-          <td style="padding:8px 0;font-size:13px;color:var(--muted)">{{ party.last_updated }}</td>
+          <td style="padding:7px 0;font-size:11px;color:var(--muted)">Updated</td>
+          <td style="padding:7px 0;font-size:12px;color:var(--muted)">{{ party.last_updated }}</td>
         </tr>
       </table>
     </div>
 
     <!-- Total Outstanding -->
     <div class="card" style="background:linear-gradient(135deg,rgba(239,68,68,0.08),rgba(239,68,68,0.02));border-color:rgba(239,68,68,0.2)">
-      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:12px">💰 Total Outstanding</div>
-      <div style="font-size:36px;font-weight:800;color:#ef4444;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:10px">💰 Outstanding</div>
+      <div style="font-size:28px;font-weight:800;color:#ef4444;margin-bottom:6px;line-height:1.1">
         ₹ {{ '{:,.2f}'.format(party.total_pending) }}
       </div>
-      <div style="font-size:13px;color:var(--muted)">Pending across {{ party.buckets|length }} aging bucket(s)</div>
-      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Aging Distribution</div>
+      <div style="font-size:12px;color:var(--muted)">{{ party.buckets|length }} bucket(s)</div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Aging Split</div>
         {% for bkey, bamt in party.buckets.items() %}
         {% set pct = (bamt / party.total_pending * 100)|round(1) %}
-        <div style="margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+        <div style="margin-bottom:7px">
+          <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">
             <span style="color:{{ bucket_colors.get(bkey,'#60a5fa') }}">{{ bucket_map.get(bkey, bkey) }}</span>
             <span style="color:var(--muted)">{{ pct }}%</span>
           </div>
@@ -77,28 +79,22 @@
   </div>
 
   <!-- Bucket Breakdown -->
-  <div class="card">
-    <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:16px">📅 Bucket-wise Breakdown</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+  <div class="card" style="margin-bottom:20px">
+    <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:14px">📅 Bucket-wise Breakdown</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">
       {% for b in buckets %}
       {% if b.key in party.buckets %}
       {% set amt = party.buckets[b.key] %}
       {% set color = bucket_colors.get(b.key, '#60a5fa') %}
-      <div style="background:rgba(255,255,255,0.03);border:1px solid {{ color }}33;border-radius:12px;padding:16px;border-top:2px solid {{ color }}">
-        <div style="font-size:11px;color:{{ color }};font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">
+      <div style="background:rgba(255,255,255,0.03);border:1px solid {{ color }}33;border-radius:10px;padding:14px;border-top:2px solid {{ color }}">
+        <div style="font-size:10px;color:{{ color }};font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">
           {{ b.label }}
         </div>
-        <div style="font-size:20px;font-weight:700;color:#fff;margin-bottom:4px">
+        <div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:3px">
           ₹ {{ '{:,.2f}'.format(amt) }}
         </div>
-        <div style="font-size:11px;color:var(--muted)">
+        <div style="font-size:10px;color:var(--muted)">
           {{ ((amt / party.total_pending) * 100)|round(1) }}% of total
-        </div>
-        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-          <div style="font-size:11px;color:var(--muted)">Total Outstanding</div>
-          <div style="font-size:14px;font-weight:600;color:#ef4444;margin-top:2px">
-            ₹ {{ '{:,.2f}'.format(party.total_pending) }}
-          </div>
         </div>
       </div>
       {% endif %}
@@ -107,10 +103,10 @@
   </div>
 
   <!-- Reminder Panel -->
-  <div class="card" style="margin-top:20px">
-    <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:16px">📧 Payment Reminder</div>
-    <div style="background:var(--surface2);border-radius:10px;padding:16px;margin-bottom:16px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Preview Message</div>
+  <div class="card">
+    <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:14px">📧 Payment Reminder</div>
+    <div style="background:var(--surface2);border-radius:10px;padding:14px;margin-bottom:14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Preview Message</div>
       <div style="font-size:13px;color:var(--text);line-height:1.7" id="reminderPreview">
         Dear <strong>{{ party.contact_person or party.name }}</strong>,<br><br>
         This is a gentle reminder regarding your outstanding payment with Maktronic Medical LLP.<br><br>
@@ -123,13 +119,22 @@
         Regards,<br>Maktronic Medical LLP
       </div>
     </div>
-    <div style="display:flex;gap:10px">
-      <button class="btn btn-primary" onclick="sendReminder()">📧 Send Email Reminder</button>
-      <button class="btn btn-outline" onclick="copyReminder()">📋 Copy Message</button>
-      <a href="https://wa.me/{{ party.phone|replace(' ','')|replace('-','') }}" target="_blank" class="btn btn-outline" style="text-decoration:none">💬 WhatsApp</a>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="sendReminder()">📧 Send Email</button>
+      <button class="btn btn-outline" onclick="copyReminder()">📋 Copy</button>
+      <a href="https://wa.me/{{ party.phone|replace(' ','')|replace('-','') }}" target="_blank"
+         class="btn btn-outline" style="text-decoration:none;background:#25D366;color:#fff;border-color:#25D366">
+        💬 WhatsApp
+      </a>
     </div>
   </div>
 </div>
+
+<style>
+@media (max-width: 600px) {
+  .detail-top-grid { grid-template-columns: 1fr !important; }
+}
+</style>
 {% endblock %}
 
 {% block scripts %}
@@ -141,7 +146,6 @@ function sendReminder() {
     body: JSON.stringify({party_name: '{{ party.name }}'})
   }).then(r => r.json()).then(d => showToast(d.message, 'success'));
 }
-
 function copyReminder() {
   const text = document.getElementById('reminderPreview').innerText;
   navigator.clipboard.writeText(text).then(() => showToast('Message copied!', 'success'));
