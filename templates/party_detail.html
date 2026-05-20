@@ -15,6 +15,9 @@
   </div>
   <div class="topbar-actions">
     <button class="btn btn-danger" onclick="sendReminder()">📧 Remind</button>
+    <button class="btn btn-delete" onclick="confirmDeleteParty()" style="background: rgba(239,68,68,0.15); color: #ef4444;">
+    🗑️ Delete Party
+  </button>
   </div>
 </div>
 
@@ -151,4 +154,76 @@ function copyReminder() {
   navigator.clipboard.writeText(text).then(() => showToast('Message copied!', 'success'));
 }
 </script>
+<!-- Add this to the scripts block at the end -->
+
+<script>
+function sendReminder() {
+  fetch('/api/send-reminder', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({party_name: '{{ party.name }}'})
+  }).then(r => r.json()).then(d => showToast(d.message, 'success'));
+}
+
+function copyReminder() {
+  const text = document.getElementById('reminderPreview').innerText;
+  navigator.clipboard.writeText(text).then(() => showToast('Message copied!', 'success'));
+}
+
+function confirmDeleteParty() {
+  const partyName = '{{ party.name }}';
+  const totalAmount = {{ party.total_pending }};
+  
+  const modalHtml = `
+    <div class="modal-overlay" id="deleteConfirmModal">
+      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; max-width: 400px; width: 90%;">
+        <h3 style="color: #ef4444; margin-bottom: 12px;">⚠️ Delete Party</h3>
+        <p>Are you sure you want to delete <strong>${partyName}</strong>?</p>
+        <p style="font-size: 12px; color: #ef4444; margin: 8px 0;">Total amount: ₹${totalAmount.toLocaleString('en-IN', {minimumFractionDigits: 2})}</p>
+        <p style="font-size: 12px; margin-top: 12px;">This action cannot be undone.</p>
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px;">
+          <button class="btn btn-outline" onclick="closeDeleteModal()">Cancel</button>
+          <button class="btn" style="background: #dc2626; color: white;" onclick="deleteParty()">Delete Forever</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existingModal = document.getElementById('deleteConfirmModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  document.getElementById('deleteConfirmModal').classList.add('open');
+}
+
+function closeDeleteModal() {
+  const modal = document.getElementById('deleteConfirmModal');
+  if (modal) modal.remove();
+}
+
+async function deleteParty() {
+  closeDeleteModal();
+  showToast('Deleting party...', 'info');
+  
+  try {
+    const response = await fetch(`/api/delete-party/${encodeURIComponent('{{ party.name }}')}`, {
+      method: 'DELETE'
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showToast(result.message, 'success');
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 1500);
+    } else {
+      showToast(result.error || 'Deletion failed', 'error');
+    }
+  } catch (error) {
+    showToast('Network error: ' + error.message, 'error');
+  }
+}
+</script>
+
 {% endblock %}

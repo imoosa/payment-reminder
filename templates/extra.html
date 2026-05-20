@@ -1,0 +1,640 @@
+{% extends "base.html" %}
+{% block title %}{{ bucket_label }} – Maktronic Debtors{% endblock %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+{% set bucket_colors = {'lt30':'#10b981','30_60':'#60a5fa','60_90':'#a78bfa','90_120':'#fcd34d','120_180':'#fb923c','gt180':'#f87171'} %}
+{% set bucket_color = bucket_colors.get(bucket_key, '#60a5fa') %}
+
+<div class="topbar">
+  <div class="topbar-left">
+    <button class="hamburger" onclick="openSidebar()" aria-label="Open menu">☰</button>
+    <a href="/" style="color:var(--muted);text-decoration:none;font-size:22px;line-height:1;flex-shrink:0">‹</a>
+    <div style="min-width:0">
+      <div class="topbar-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ bucket_label }}</div>
+      <div class="topbar-sub">{{ parties|length }} parties · ₹ {{ '{:,.2f}'.format(bucket_total) }}</div>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button class="btn btn-outline" id="deleteModeBtn" onclick="toggleDeleteMode()" style="background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: #ef4444;">
+    🗑️ Delete Mode
+  </button>
+  <input type="text" id="filterInput" placeholder="Filter…" oninput="filterParties(this.value)"
+    style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:#fff;padding:7px 12px;font-size:13px;outline:none;width:110px;min-width:0">
+  <button class="btn btn-whatsapp" id="waBulkBtn" onclick="openWaModal()" style="display:none">
+    💬 <span id="selectedCount">0</span>
+  </button>
+    <input type="text" id="filterInput" placeholder="Filter…" oninput="filterParties(this.value)"
+      style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:#fff;padding:7px 12px;font-size:13px;outline:none;width:110px;min-width:0">
+    <button class="btn btn-whatsapp" id="waBulkBtn" onclick="openWaModal()" style="display:none">
+      💬 <span id="selectedCount">0</span>
+    </button>
+  </div>
+</div>
+
+<div class="page-content">
+  <!-- Mini Stats -->
+  <div class="stat-grid">
+    <div class="stat-card blue">
+      <div class="stat-label">Parties</div>
+      <div class="stat-value accent">{{ parties|length }}</div>
+      <div class="stat-sub">In this bucket</div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-label">Bucket Total</div>
+      <div class="stat-value danger" style="font-size:18px">₹ {{ '{:,.2f}'.format(bucket_total) }}</div>
+      <div class="stat-sub">{{ bucket_label }}</div>
+    </div>
+    <div class="stat-card gold" style="grid-column:span 2">
+      <div class="stat-label">Avg. Per Party</div>
+      <div class="stat-value warn" style="font-size:18px">
+        ₹ {{ '{:,.2f}'.format(bucket_total / parties|length) if parties|length > 0 else '0.00' }}
+      </div>
+      <div class="stat-sub">Average outstanding</div>
+    </div>
+  </div>
+
+  <!-- Charts Row -->
+  <div class="charts-row" style="display:grid;grid-template-columns:1fr 1.5fr;gap:16px;margin-bottom:16px">
+    <div class="card" style="padding:20px">
+      <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:2px">Top Parties</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">By amount</div>
+      <div style="height:180px;display:flex;align-items:center;justify-content:center">
+        <canvas id="partyDonut"></canvas>
+      </div>
+    </div>
+    <div class="card" style="padding:20px">
+      <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:2px">Distribution</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Top 10 parties</div>
+      <div style="height:190px">
+        <canvas id="partyBar"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Party Table / Cards -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap">
+      <div style="font-size:14px;font-weight:700;color:#fff">
+        📋 Parties in {{ bucket_label }}
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"
+            style="width:15px;height:15px;accent-color:{{ bucket_color }};cursor:pointer">
+          Select All
+        </label>
+        <span style="font-size:12px;color:var(--muted)" id="selectionInfo">0 selected</span>
+      </div>
+    </div>
+
+    <!-- Desktop Table -->
+    <div id="partyTableWrap" class="desktop-table">
+      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+        <table style="width:100%;border-collapse:collapse;min-width:600px" id="partyTable">
+          <!-- Update the thead section -->
+<thead>
+  <tr style="border-bottom:1px solid var(--border)">
+    <th style="width:36px;padding:10px 8px;text-align:center"></th>
+    <th style="width:40px;padding:10px 8px;text-align:center">🗑️</th>
+    <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">PARTY</th>
+    <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">LOCATION</th>
+    <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">CONTACT</th>
+    <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">PHONE</th>
+    <th style="padding:10px 12px;text-align:right;font-size:11px;color:var(--muted);font-weight:600">BUCKET AMT</th>
+    <th style="padding:10px 12px;text-align:right;font-size:11px;color:var(--muted);font-weight:600">TOTAL PENDING</th>
+    <th style="padding:10px 12px;text-align:center;font-size:11px;color:var(--muted);font-weight:600">WA</th>
+  </tr>
+</thead>
+<tbody id="partyTbody">
+  {% for p in parties %}
+  <tr class="party-row" data-name="{{ p.name }}" data-phone="{{ p.phone }}"
+      data-bucket="{{ p.bucket_amount }}" data-total="{{ p.total_pending }}"
+      style="border-bottom:1px solid var(--border);transition:background 0.15s"
+      onmouseover="this.style.background='rgba(255,255,255,0.03)'"
+      onmouseout="this.style.background=''">
+    <td style="padding:10px 8px;text-align:center">
+      <input type="checkbox" class="party-check"
+        data-name="{{ p.name }}" data-phone="{{ p.phone }}"
+        data-bucket="{{ p.bucket_amount }}" data-total="{{ p.total_pending }}"
+        onchange="updateSelection()"
+        style="width:15px;height:15px;accent-color:{{ bucket_color }};cursor:pointer">
+    </td>
+    <td style="padding:10px 8px;text-align:center">
+      <button onclick="deleteSingleParty('{{ p.name }}')" class="delete-single-btn" 
+        style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 14px; opacity: 0.6; transition: opacity 0.2s;"
+        onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'"
+        title="Delete party">
+        🗑️
+      </button>
+    </td>
+    <td style="padding:10px 12px">
+      <a href="/party/{{ p.name | urlencode }}" style="font-size:13px;font-weight:600;color:#fff;text-decoration:none">{{ p.name }}</a>
+    </td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--muted)">{{ p.location or '—' }}</td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--muted)">{{ p.contact_person or '—' }}</td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--muted)">
+      {% if p.phone %}<a href="tel:{{ p.phone }}" style="color:var(--muted);text-decoration:none">{{ p.phone }}</a>{% else %}—{% endif %}
+    </td>
+    <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:700;color:{{ bucket_color }}">
+      ₹ {{ '{:,.2f}'.format(p.bucket_amount) }}
+    </td>
+    <td style="padding:10px 12px;text-align:right;font-size:13px;color:#ef4444;font-weight:600">
+      ₹ {{ '{:,.2f}'.format(p.total_pending) }}
+    </td>
+    <td style="padding:10px 12px;text-align:center">
+      {% if p.phone %}
+      <a href="https://wa.me/91{{ p.phone | replace(' ','') | replace('-','') | replace('+','') | replace('91','',1) }}"
+         target="_blank"
+         style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#25D366;color:#fff;text-decoration:none;font-size:13px">
+        💬
+      </a>
+      {% else %}<span style="color:var(--muted);font-size:10px">—</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Mobile Cards (hidden on desktop) -->
+    <div id="partyCards" class="mobile-cards" style="display:none">
+      {% for p in parties %}
+      <div class="party-card party-row" data-name="{{ p.name }}" data-phone="{{ p.phone }}"
+           data-bucket="{{ p.bucket_amount }}" data-total="{{ p.total_pending }}"
+           style="border-bottom:1px solid var(--border);padding:14px 0">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <input type="checkbox" class="party-check"
+            data-name="{{ p.name }}" data-phone="{{ p.phone }}"
+            data-bucket="{{ p.bucket_amount }}" data-total="{{ p.total_pending }}"
+            onchange="updateSelection()"
+            style="width:16px;height:16px;accent-color:{{ bucket_color }};cursor:pointer;margin-top:3px;flex-shrink:0">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">
+              <a href="/party/{{ p.name | urlencode }}" style="font-size:14px;font-weight:700;color:#fff;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                {{ p.name }}
+              </a>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:14px;font-weight:700;color:{{ bucket_color }}">₹ {{ '{:,.0f}'.format(p.bucket_amount) }}</div>
+                <div style="font-size:10px;color:#ef4444">₹ {{ '{:,.0f}'.format(p.total_pending) }} total</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+              {% if p.location %}<span style="font-size:11px;color:var(--muted)">📍 {{ p.location }}</span>{% endif %}
+              {% if p.contact_person %}<span style="font-size:11px;color:var(--muted)">👤 {{ p.contact_person }}</span>{% endif %}
+              {% if p.phone %}
+              <a href="tel:{{ p.phone }}" style="font-size:11px;color:var(--accent);text-decoration:none">📞 {{ p.phone }}</a>
+              <a href="https://wa.me/91{{ p.phone | replace(' ','') | replace('-','') | replace('+','') | replace('91','',1) }}"
+                 target="_blank"
+                 style="font-size:11px;color:#25D366;text-decoration:none;font-weight:600">💬 WA</a>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Bottom action bar -->
+    <div id="selectionBar" style="display:none;margin-top:14px;padding:12px 14px;background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.3);border-radius:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div style="font-size:13px;color:#25D366;font-weight:600">
+        <span id="barCount">0</span> selected · <span id="barTotal">₹0</span>
+      </div>
+      <button class="btn btn-whatsapp" onclick="openWaModal()">💬 Send WhatsApp</button>
+      <button class="btn btn-delete" id="bulkDeleteBtn" onclick="confirmBulkDelete()" style="display: none;">🗑️ Delete Selected</button>
+    </div>
+  </div>
+</div>
+
+<!-- WhatsApp Message Modal -->
+<div class="modal-overlay" id="waModal">
+  <div class="modal" style="max-width:520px;width:100%">
+    <h3 style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:20px">💬</span> WhatsApp Message
+    </h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px">
+      Use <strong style="color:#25D366">{name}</strong>, <strong style="color:#25D366">{bucket_amount}</strong>, <strong style="color:#25D366">{total_pending}</strong> as placeholders.
+    </p>
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Quick Templates</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <button onclick="setTemplate('gentle')" class="tpl-btn">🙏 Gentle</button>
+        <button onclick="setTemplate('firm')" class="tpl-btn">⚠️ Firm</button>
+        <button onclick="setTemplate('final')" class="tpl-btn">🚨 Final</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Message</label>
+      <textarea id="waMessage" rows="6" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:#fff;padding:12px;font-size:13px;line-height:1.6;resize:vertical;font-family:inherit;outline:none"></textarea>
+    </div>
+    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;margin-bottom:14px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:5px;font-weight:600">PREVIEW</div>
+      <div id="waPreview" style="font-size:12px;color:#d1d5db;white-space:pre-wrap;line-height:1.6;max-height:120px;overflow-y:auto"></div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px">
+      📱 <span id="waCount" style="color:#25D366;font-weight:600"></span> windows will open.
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeWaModal()">Cancel</button>
+      <button class="btn btn-whatsapp" onclick="sendWhatsApp()">💬 Open WhatsApp for All</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.btn-whatsapp {
+  background: #25D366; color: #fff; border: none;
+  padding: 8px 14px; border-radius: 8px; font-size: 13px;
+  font-weight: 600; cursor: pointer; transition: background 0.2s;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.btn-whatsapp:hover { background: #1ebe5d; }
+.tpl-btn {
+  background: rgba(255,255,255,0.07); color: #d1d5db;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 10px; font-size: 12px; cursor: pointer; transition: background 0.15s;
+}
+.tpl-btn:hover { background: rgba(255,255,255,0.13); color: #fff; }
+
+/* Mobile: hide table, show cards */
+@media (max-width: 700px) {
+  .desktop-table { display: none !important; }
+  .mobile-cards  { display: block !important; }
+  .charts-row    { grid-template-columns: 1fr !important; }
+}
+@media (min-width: 701px) {
+  .mobile-cards { display: none !important; }
+}
+</style>
+
+<script>
+/* Chart data */
+const parties = [
+  {% for p in parties %}
+  { name: {{ p.name | tojson }}, bucket: {{ p.bucket_amount }}, total: {{ p.total_pending }} }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+
+const bucketColor = '{{ bucket_color }}';
+const top5  = [...parties].sort((a,b)=>b.bucket-a.bucket).slice(0,5);
+const top10 = [...parties].sort((a,b)=>b.bucket-a.bucket).slice(0,10);
+const palette = ['{{ bucket_color }}','#60a5fa','#a78bfa','#fcd34d','#f87171'];
+
+/* Donut */
+new Chart(document.getElementById('partyDonut').getContext('2d'), {
+  type: 'doughnut',
+  data: {
+    labels: top5.map(p=>p.name.length>18?p.name.slice(0,16)+'…':p.name),
+    datasets: [{ data: top5.map(p=>p.bucket), backgroundColor: palette, borderWidth: 2, borderColor:'rgba(0,0,0,0.3)', hoverOffset:6 }]
+  },
+  options: {
+    cutout:'65%', responsive:true, maintainAspectRatio:false,
+    plugins: {
+      legend:{ position:'right', labels:{ color:'#9ca3af', font:{size:9}, boxWidth:8, padding:6 } },
+      tooltip:{ callbacks:{ label:ctx=>` ₹${ctx.parsed.toLocaleString('en-IN',{minimumFractionDigits:2})}` } }
+    }
+  }
+});
+
+/* Bar */
+new Chart(document.getElementById('partyBar').getContext('2d'), {
+  type: 'bar',
+  data: {
+    labels: top10.map(p=>p.name.length>13?p.name.slice(0,12)+'…':p.name),
+    datasets: [{ label:'Bucket Amount', data:top10.map(p=>p.bucket), backgroundColor:bucketColor+'bb', borderRadius:5, borderSkipped:false }]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>` ₹${ctx.parsed.y.toLocaleString('en-IN',{minimumFractionDigits:2})}` } } },
+    scales:{
+      x:{ ticks:{ color:'#9ca3af', font:{size:9}, maxRotation:35, minRotation:20 }, grid:{color:'rgba(255,255,255,0.04)'} },
+      y:{ ticks:{ color:'#9ca3af', font:{size:9}, callback:v=>'₹'+(v>=100000?(v/100000).toFixed(1)+'L':v>=1000?(v/1000).toFixed(0)+'K':v) }, grid:{color:'rgba(255,255,255,0.07)'} }
+    }
+  }
+});
+
+/* Selection logic */
+function getChecked() { return [...document.querySelectorAll('.party-check:checked')]; }
+
+function updateSelection() {
+  const checked = getChecked();
+  const count = checked.length;
+  const total = checked.reduce((s,cb)=>s+parseFloat(cb.dataset.total||0), 0);
+  document.getElementById('selectedCount').textContent = count;
+  document.getElementById('selectionInfo').textContent = count + ' selected';
+  const bar = document.getElementById('selectionBar');
+  const btn = document.getElementById('waBulkBtn');
+  if (count > 0) {
+    bar.style.display = 'flex';
+    btn.style.display = 'inline-flex';
+    document.getElementById('barCount').textContent = count;
+    document.getElementById('barTotal').textContent = '₹' + total.toLocaleString('en-IN',{minimumFractionDigits:2});
+  } else {
+    bar.style.display = 'none';
+    btn.style.display = 'none';
+  }
+  const allBoxes = document.querySelectorAll('.party-check');
+  document.getElementById('selectAll').indeterminate = count > 0 && count < allBoxes.length;
+  document.getElementById('selectAll').checked = count === allBoxes.length && allBoxes.length > 0;
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.party-check:not(.hidden-row .party-check)').forEach(cb => cb.checked = checked);
+  updateSelection();
+}
+
+function filterParties(q) {
+  const rows = document.querySelectorAll('.party-row');
+  const term = q.toLowerCase();
+  rows.forEach(row => {
+    const name  = row.dataset.name.toLowerCase();
+    const phone = (row.dataset.phone||'').toLowerCase();
+    const match = !term || name.includes(term) || phone.includes(term);
+    row.style.display = match ? '' : 'none';
+    row.classList.toggle('hidden-row', !match);
+    if (!match) { const cb = row.querySelector('.party-check'); if(cb) cb.checked = false; }
+  });
+  updateSelection();
+}
+
+/* WhatsApp templates */
+const templates = {
+  gentle: `Dear {name},\n\nWe hope you are doing well.\n\nThis is a gentle reminder regarding your outstanding payment of ₹{total_pending} with Maktronic.\n\nYour overdue amount in the current aging bucket is ₹{bucket_amount}.\n\nWe would appreciate it if you could arrange the payment at the earliest convenience.\n\nWarm regards,\nMaktronic Team`,
+  firm:   `Dear {name},\n\nThis is an important notice regarding your outstanding dues.\n\n📌 Total Pending: ₹{total_pending}\n⏰ Overdue Amount: ₹{bucket_amount}\n\nYour account has exceeded the agreed credit period. Please clear dues immediately to avoid service disruption.\n\nRegards,\nMaktronic Team`,
+  final:  `Dear {name},\n\n⚠️ FINAL NOTICE ⚠️\n\nDespite repeated reminders, your outstanding payment remains unpaid:\n\nTotal Due: ₹{total_pending}\nOverdue: ₹{bucket_amount}\n\nPlease clear all dues within 48 hours to avoid legal action.\n\nMaktronic Management`
+};
+
+function setTemplate(key) { document.getElementById('waMessage').value = templates[key]; updatePreview(); }
+
+function fillMessage(msg, party) {
+  return msg
+    .replace(/{name}/g, party.name)
+    .replace(/{bucket_amount}/g, '₹' + parseFloat(party.bucket).toLocaleString('en-IN',{minimumFractionDigits:2}))
+    .replace(/{total_pending}/g, '₹' + parseFloat(party.total).toLocaleString('en-IN',{minimumFractionDigits:2}));
+}
+
+function updatePreview() {
+  const msg = document.getElementById('waMessage').value;
+  const checked = getChecked();
+  if (!msg || !checked.length) { document.getElementById('waPreview').textContent=''; return; }
+  const first = { name:checked[0].dataset.name, bucket:checked[0].dataset.bucket, total:checked[0].dataset.total };
+  document.getElementById('waPreview').textContent = fillMessage(msg, first);
+}
+document.getElementById('waMessage') && document.getElementById('waMessage').addEventListener('input', updatePreview);
+
+let selectedParties = [];
+
+function openWaModal() {
+  const checked = getChecked();
+  if (!checked.length) { showToast('Select at least one party','error'); return; }
+  selectedParties = checked.map(cb => ({ name:cb.dataset.name, phone:cb.dataset.phone, bucket:cb.dataset.bucket, total:cb.dataset.total }));
+  document.getElementById('waCount').textContent = selectedParties.length + ' parties';
+  if (!document.getElementById('waMessage').value) setTemplate('gentle');
+  updatePreview();
+  document.getElementById('waModal').classList.add('open');
+}
+
+function closeWaModal() { document.getElementById('waModal').classList.remove('open'); }
+
+function normalizePhone(raw) {
+  let p = (raw||'').replace(/[\s\-\.\(\)]/g,'').replace(/^\+/,'');
+  if (p.startsWith('91') && p.length===12) p = p.slice(2);
+  return '91' + p;
+}
+
+function sendWhatsApp() {
+  const msg = document.getElementById('waMessage').value.trim();
+  if (!msg) { showToast('Please enter a message','error'); return; }
+  const noPhone = selectedParties.filter(p=>!p.phone);
+  if (noPhone.length) showToast(`${noPhone.length} parties skipped (no phone)`, 'error');
+  const valid = selectedParties.filter(p=>p.phone&&p.phone.trim());
+  if (!valid.length) { showToast('No parties have phone numbers','error'); return; }
+  closeWaModal();
+  showToast(`Opening WhatsApp for ${valid.length} parties…`, 'success');
+  valid.forEach((party, i) => {
+    setTimeout(() => {
+      const text  = fillMessage(msg, party);
+      const phone = normalizePhone(party.phone);
+      window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
+    }, i * 1200);
+  });
+}
+
+document.querySelectorAll('.modal-overlay').forEach(el=>{
+  el.addEventListener('click',e=>{ if(e.target===el) el.classList.remove('open'); });
+});
+setTemplate('gentle');
+</script>
+<script>
+// Delete mode functionality
+let deleteMode = false;
+
+function toggleDeleteMode() {
+  deleteMode = !deleteMode;
+  const deleteBtn = document.getElementById('deleteModeBtn');
+  const checkboxes = document.querySelectorAll('.party-check');
+  const waBulkBtn = document.getElementById('waBulkBtn');
+  
+  if (deleteMode) {
+    deleteBtn.style.background = '#dc2626';
+    deleteBtn.style.borderColor = '#dc2626';
+    deleteBtn.style.color = 'white';
+    deleteBtn.innerHTML = '🗑️ Exit Delete Mode';
+    
+    // Uncheck all checkboxes
+    checkboxes.forEach(cb => cb.checked = false);
+    
+    // Show bulk delete button in selection bar
+    document.getElementById('bulkDeleteBtn').style.display = 'inline-flex';
+    
+    // Hide WhatsApp button in selection bar
+    if (waBulkBtn) waBulkBtn.style.display = 'none';
+    
+    // Update checkbox styling
+    checkboxes.forEach(cb => cb.classList.add('delete-mode'));
+    
+    showToast('Delete Mode Active - Select parties to delete', 'error');
+  } else {
+    deleteBtn.style.background = 'rgba(239,68,68,0.1)';
+    deleteBtn.style.borderColor = 'rgba(239,68,68,0.3)';
+    deleteBtn.style.color = '#ef4444';
+    deleteBtn.innerHTML = '🗑️ Delete Mode';
+    
+    // Hide bulk delete button
+    document.getElementById('bulkDeleteBtn').style.display = 'none';
+    
+    // Show WhatsApp button if there are selections
+    if (waBulkBtn && getChecked().length > 0) {
+      waBulkBtn.style.display = 'inline-flex';
+    }
+    
+    // Remove checkbox styling
+    checkboxes.forEach(cb => cb.classList.remove('delete-mode'));
+    
+    // Clear selections
+    checkboxes.forEach(cb => cb.checked = false);
+    updateSelection();
+  }
+}
+
+function confirmBulkDelete() {
+  const checked = getChecked();
+  if (!checked.length) {
+    showToast('No parties selected for deletion', 'error');
+    return;
+  }
+  
+  const partyNames = checked.map(cb => cb.dataset.name);
+  const totalAmount = checked.reduce((sum, cb) => sum + parseFloat(cb.dataset.total || 0), 0);
+  
+  // Show confirmation modal
+  const modalHtml = `
+    <div class="modal-overlay" id="deleteConfirmModal">
+      <div class="confirmation-modal">
+        <h3>⚠️ Confirm Deletion</h3>
+        <p>Are you sure you want to delete <strong>${partyNames.length}</strong> party(ies)?</p>
+        <p style="font-size: 12px; color: #ef4444;">Total amount: ₹${totalAmount.toLocaleString('en-IN', {minimumFractionDigits: 2})}</p>
+        <p style="font-size: 12px; margin-top: 12px;">This action cannot be undone.</p>
+        <div class="modal-buttons">
+          <button class="btn btn-outline" onclick="closeDeleteConfirmModal()">Cancel</button>
+          <button class="btn btn-delete-danger" onclick="executeBulkDelete(${JSON.stringify(partyNames).replace(/"/g, '&quot;')})">Delete Forever</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Remove existing modal if any
+  const existingModal = document.getElementById('deleteConfirmModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  document.getElementById('deleteConfirmModal').classList.add('open');
+}
+
+function closeDeleteConfirmModal() {
+  const modal = document.getElementById('deleteConfirmModal');
+  if (modal) modal.remove();
+}
+
+async function executeBulkDelete(partyNames) {
+  closeDeleteConfirmModal();
+  
+  showToast(`Deleting ${partyNames.length} parties...`, 'info');
+  
+  try {
+    const response = await fetch('/api/delete-parties-bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ party_names: partyNames })
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showToast(result.message, 'success');
+      // Exit delete mode and refresh
+      if (deleteMode) toggleDeleteMode();
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      showToast(result.error || 'Deletion failed', 'error');
+    }
+  } catch (error) {
+    showToast('Network error: ' + error.message, 'error');
+  }
+}
+
+// Modify updateSelection to handle delete mode
+const originalUpdateSelection = updateSelection;
+updateSelection = function() {
+  originalUpdateSelection();
+  
+  const checked = getChecked();
+  const deleteBtn = document.getElementById('bulkDeleteBtn');
+  const waBulkBtn = document.getElementById('waBulkBtn');
+  
+  if (deleteMode) {
+    if (deleteBtn) deleteBtn.style.display = checked.length > 0 ? 'inline-flex' : 'none';
+    if (waBulkBtn) waBulkBtn.style.display = 'none';
+  } else {
+    if (deleteBtn) deleteBtn.style.display = 'none';
+    if (waBulkBtn) waBulkBtn.style.display = checked.length > 0 ? 'inline-flex' : 'none';
+  }
+}
+
+// Update filterParties to handle delete mode properly
+const originalFilterParties = filterParties;
+filterParties = function(q) {
+  originalFilterParties(q);
+  if (deleteMode) {
+    // Re-check delete mode checkbox styling
+    document.querySelectorAll('.party-check').forEach(cb => cb.classList.add('delete-mode'));
+  }
+}
+
+// Add individual delete button to each party row (add to table)
+// Add this column in the table header after the checkbox column:
+// <th style="width:36px;padding:10px 8px;text-align:center">Del</th>
+
+// And add this cell in each row after the checkbox:
+/*
+<td style="padding:10px 8px;text-align:center">
+  <button onclick="deleteSingleParty('${p.name}')" class="delete-single-btn" style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 14px;" title="Delete party">
+    🗑️
+  </button>
+</td>
+*/
+
+// Add individual delete function
+async function deleteSingleParty(partyName) {
+  const modalHtml = `
+    <div class="modal-overlay" id="deleteSingleModal">
+      <div class="confirmation-modal">
+        <h3>⚠️ Confirm Deletion</h3>
+        <p>Are you sure you want to delete <strong>${partyName}</strong>?</p>
+        <p style="font-size: 12px; margin-top: 12px;">This action cannot be undone.</p>
+        <div class="modal-buttons">
+          <button class="btn btn-outline" onclick="closeDeleteSingleModal()">Cancel</button>
+          <button class="btn btn-delete-danger" onclick="executeDeleteSingle('${partyName.replace(/'/g, "\\'")}')">Delete Forever</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existingModal = document.getElementById('deleteSingleModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  document.getElementById('deleteSingleModal').classList.add('open');
+}
+
+function closeDeleteSingleModal() {
+  const modal = document.getElementById('deleteSingleModal');
+  if (modal) modal.remove();
+}
+
+async function executeDeleteSingle(partyName) {
+  closeDeleteSingleModal();
+  
+  showToast(`Deleting ${partyName}...`, 'info');
+  
+  try {
+    const response = await fetch(`/api/delete-party/${encodeURIComponent(partyName)}`, {
+      method: 'DELETE'
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showToast(result.message, 'success');
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      showToast(result.error || 'Deletion failed', 'error');
+    }
+  } catch (error) {
+    showToast('Network error: ' + error.message, 'error');
+  }
+}
+</script>
+{% endblock %}

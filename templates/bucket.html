@@ -7,6 +7,86 @@
 {% set bucket_colors = {'lt30':'#10b981','30_60':'#60a5fa','60_90':'#a78bfa','90_120':'#fcd34d','120_180':'#fb923c','gt180':'#f87171'} %}
 {% set bucket_color = bucket_colors.get(bucket_key, '#60a5fa') %}
 
+<style>
+.btn-delete {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-delete:hover {
+  background: rgba(239, 68, 68, 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-danger-solid {
+  background: #dc2626;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-danger-solid:hover {
+  background: #b91c1c;
+  transform: translateY(-1px);
+}
+
+.delete-icon {
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.delete-icon:hover {
+  background: rgba(239, 68, 68, 0.2);
+  transform: scale(1.05);
+}
+
+.confirmation-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+}
+
+.confirmation-modal h3 {
+  color: #ef4444;
+  margin-bottom: 12px;
+}
+
+.confirmation-modal p {
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+</style>
+
 <div class="topbar">
   <div class="topbar-left">
     <button class="hamburger" onclick="openSidebar()" aria-label="Open menu">☰</button>
@@ -65,7 +145,7 @@
     </div>
   </div>
 
-  <!-- Party Table / Cards -->
+  <!-- Party Table -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap">
       <div style="font-size:14px;font-weight:700;color:#fff">
@@ -78,16 +158,19 @@
           Select All
         </label>
         <span style="font-size:12px;color:var(--muted)" id="selectionInfo">0 selected</span>
+        <button class="btn-delete" id="bulkDeleteBtn" onclick="confirmBulkDelete()" style="display:none">
+          🗑️ Delete Selected (<span id="bulkDeleteCount">0</span>)
+        </button>
       </div>
     </div>
 
     <!-- Desktop Table -->
     <div id="partyTableWrap" class="desktop-table">
       <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
-        <table style="width:100%;border-collapse:collapse;min-width:600px" id="partyTable">
+        <table style="width:100%;border-collapse:collapse;min-width:650px" id="partyTable">
           <thead>
             <tr style="border-bottom:1px solid var(--border)">
-              <th style="width:36px;padding:10px 8px;text-align:center"></th>
+              <th style="width:30px;padding:10px 8px;text-align:center"></th>
               <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">PARTY</th>
               <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">LOCATION</th>
               <th style="padding:10px 12px;text-align:left;font-size:11px;color:var(--muted);font-weight:600">CONTACT</th>
@@ -95,6 +178,7 @@
               <th style="padding:10px 12px;text-align:right;font-size:11px;color:var(--muted);font-weight:600">BUCKET AMT</th>
               <th style="padding:10px 12px;text-align:right;font-size:11px;color:var(--muted);font-weight:600">TOTAL PENDING</th>
               <th style="padding:10px 12px;text-align:center;font-size:11px;color:var(--muted);font-weight:600">WA</th>
+              <th style="width:40px;padding:10px 8px;text-align:center;font-size:11px;color:var(--muted);font-weight:600">DEL</th>
             </tr>
           </thead>
           <tbody id="partyTbody">
@@ -134,6 +218,12 @@
                 </a>
                 {% else %}<span style="color:var(--muted);font-size:10px">—</span>{% endif %}
               </td>
+              <td style="padding:10px 8px;text-align:center">
+                <button onclick="deleteSingleParty('{{ p.name }}', {{ p.total_pending }})" 
+                  class="delete-icon" title="Delete party">
+                  🗑️
+                </button>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
@@ -141,7 +231,7 @@
       </div>
     </div>
 
-    <!-- Mobile Cards (hidden on desktop) -->
+    <!-- Mobile Cards -->
     <div id="partyCards" class="mobile-cards" style="display:none">
       {% for p in parties %}
       <div class="party-card party-row" data-name="{{ p.name }}" data-phone="{{ p.phone }}"
@@ -172,6 +262,10 @@
                  target="_blank"
                  style="font-size:11px;color:#25D366;text-decoration:none;font-weight:600">💬 WA</a>
               {% endif %}
+              <button onclick="deleteSingleParty('{{ p.name }}', {{ p.total_pending }})" 
+                class="delete-icon" style="margin-left:auto;" title="Delete party">
+                🗑️
+              </button>
             </div>
           </div>
         </div>
@@ -179,7 +273,7 @@
       {% endfor %}
     </div>
 
-    <!-- Bottom action bar -->
+    <!-- Bottom action bar for WhatsApp -->
     <div id="selectionBar" style="display:none;margin-top:14px;padding:12px 14px;background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.3);border-radius:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div style="font-size:13px;color:#25D366;font-weight:600">
         <span id="barCount">0</span> selected · <span id="barTotal">₹0</span>
@@ -239,7 +333,6 @@
 }
 .tpl-btn:hover { background: rgba(255,255,255,0.13); color: #fff; }
 
-/* Mobile: hide table, show cards */
 @media (max-width: 700px) {
   .desktop-table { display: none !important; }
   .mobile-cards  { display: block !important; }
@@ -305,17 +398,24 @@ function updateSelection() {
   const total = checked.reduce((s,cb)=>s+parseFloat(cb.dataset.total||0), 0);
   document.getElementById('selectedCount').textContent = count;
   document.getElementById('selectionInfo').textContent = count + ' selected';
-  const bar = document.getElementById('selectionBar');
-  const btn = document.getElementById('waBulkBtn');
+  
+  const bulkBtn = document.getElementById('bulkDeleteBtn');
+  const waBar = document.getElementById('selectionBar');
+  const waBtn = document.getElementById('waBulkBtn');
+  
   if (count > 0) {
-    bar.style.display = 'flex';
-    btn.style.display = 'inline-flex';
+    bulkBtn.style.display = 'inline-flex';
+    document.getElementById('bulkDeleteCount').textContent = count;
+    waBar.style.display = 'flex';
+    waBtn.style.display = 'inline-flex';
     document.getElementById('barCount').textContent = count;
     document.getElementById('barTotal').textContent = '₹' + total.toLocaleString('en-IN',{minimumFractionDigits:2});
   } else {
-    bar.style.display = 'none';
-    btn.style.display = 'none';
+    bulkBtn.style.display = 'none';
+    waBar.style.display = 'none';
+    waBtn.style.display = 'none';
   }
+  
   const allBoxes = document.querySelectorAll('.party-check');
   document.getElementById('selectAll').indeterminate = count > 0 && count < allBoxes.length;
   document.getElementById('selectAll').checked = count === allBoxes.length && allBoxes.length > 0;
@@ -340,7 +440,121 @@ function filterParties(q) {
   updateSelection();
 }
 
-/* WhatsApp templates */
+/* Delete Functions */
+function deleteSingleParty(partyName, totalAmount) {
+  const modalHtml = `
+    <div class="modal-overlay" id="deleteSingleModal">
+      <div class="confirmation-modal">
+        <h3>⚠️ Confirm Deletion</h3>
+        <p>Are you sure you want to delete <strong>${escapeHtml(partyName)}</strong>?</p>
+        <p style="font-size: 12px; color: #ef4444;">Total amount: ₹${Number(totalAmount).toLocaleString('en-IN', {minimumFractionDigits: 2})}</p>
+        <p style="font-size: 12px; margin-top: 12px;">This action cannot be undone.</p>
+        <div class="modal-buttons">
+          <button class="btn btn-outline" onclick="closeDeleteModal()">Cancel</button>
+          <button class="btn btn-danger-solid" onclick="executeDelete('${escapeHtml(partyName).replace(/'/g, "\\'")}')">Delete Forever</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existingModal = document.getElementById('deleteSingleModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  document.getElementById('deleteSingleModal').classList.add('open');
+}
+
+function confirmBulkDelete() {
+  const checked = getChecked();
+  if (!checked.length) {
+    showToast('No parties selected for deletion', 'error');
+    return;
+  }
+  
+  const partyNames = checked.map(cb => cb.dataset.name);
+  const totalAmount = checked.reduce((sum, cb) => sum + parseFloat(cb.dataset.total || 0), 0);
+  
+  const modalHtml = `
+    <div class="modal-overlay" id="deleteBulkModal">
+      <div class="confirmation-modal">
+        <h3>⚠️ Confirm Bulk Deletion</h3>
+        <p>Are you sure you want to delete <strong>${partyNames.length}</strong> party(ies)?</p>
+        <p style="font-size: 12px; color: #ef4444;">Total amount: ₹${totalAmount.toLocaleString('en-IN', {minimumFractionDigits: 2})}</p>
+        <p style="font-size: 12px; margin-top: 12px;">This action cannot be undone.</p>
+        <div class="modal-buttons">
+          <button class="btn btn-outline" onclick="closeDeleteModal()">Cancel</button>
+          <button class="btn btn-danger-solid" onclick="executeBulkDelete(${JSON.stringify(partyNames).replace(/"/g, '&quot;')})">Delete All</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existingModal = document.getElementById('deleteBulkModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  document.getElementById('deleteBulkModal').classList.add('open');
+}
+
+function closeDeleteModal() {
+  const modals = document.querySelectorAll('#deleteSingleModal, #deleteBulkModal');
+  modals.forEach(modal => modal.remove());
+}
+
+async function executeDelete(partyName) {
+  closeDeleteModal();
+  showToast(`Deleting ${partyName}...`, 'info');
+  
+  try {
+    const response = await fetch(`/api/delete-party/${encodeURIComponent(partyName)}`, {
+      method: 'DELETE'
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showToast(result.message, 'success');
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      showToast(result.error || 'Deletion failed', 'error');
+    }
+  } catch (error) {
+    showToast('Network error: ' + error.message, 'error');
+  }
+}
+
+async function executeBulkDelete(partyNames) {
+  closeDeleteModal();
+  showToast(`Deleting ${partyNames.length} parties...`, 'info');
+  
+  try {
+    const response = await fetch('/api/delete-parties-bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ party_names: partyNames })
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showToast(result.message, 'success');
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      showToast(result.error || 'Deletion failed', 'error');
+    }
+  } catch (error) {
+    showToast('Network error: ' + error.message, 'error');
+  }
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+/* WhatsApp functions */
 const templates = {
   gentle: `Dear {name},\n\nWe hope you are doing well.\n\nThis is a gentle reminder regarding your outstanding payment of ₹{total_pending} with Maktronic.\n\nYour overdue amount in the current aging bucket is ₹{bucket_amount}.\n\nWe would appreciate it if you could arrange the payment at the earliest convenience.\n\nWarm regards,\nMaktronic Team`,
   firm:   `Dear {name},\n\nThis is an important notice regarding your outstanding dues.\n\n📌 Total Pending: ₹{total_pending}\n⏰ Overdue Amount: ₹{bucket_amount}\n\nYour account has exceeded the agreed credit period. Please clear dues immediately to avoid service disruption.\n\nRegards,\nMaktronic Team`,
