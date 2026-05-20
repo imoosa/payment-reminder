@@ -300,8 +300,7 @@ def refresh_data():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-def sync_from_url(sheet_url):
-    """Sync data from a Google Sheet URL"""
+"""def sync_from_url(sheet_url):
     global last_gsheet_url, last_sync_time, last_sync_hash
     
     # Extract sheet ID from URL
@@ -392,7 +391,128 @@ def sync_from_url(sheet_url):
                 pass
                 
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        return {'success': False, 'error': str(e)}"""
+
+def sync_from_url(sheet_url):
+    """Sync data from a Google Sheet URL with better error handling"""
+    global last_gsheet_url, last_sync_time, last_sync_hash
+    
+    # Extract sheet ID from URL
+    sheet_id = None
+    patterns = [
+        r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
+        r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
+        r'spreadsheets/d/([a-zA-Z0-9-_]+)'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, sheet_url)
+        if match:
+            sheet_id = match.group(1)
+            break
+    
+    if not sheet_id:
+        return {'success': False, 'error': 'Could not extract sheet ID from URL. Make sure it\'s a valid Google Sheets URL.'}
+    
+    try:
+        # Use the correct export format
+        export_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx'
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*'
+        }
+        
+        response = requests.get(export_url, headers=headers, allow_redirects=True, timeout=30)
+        
+        # Check if we got HTML instead of Excel (indicates auth/permission issue)
+        content_type = response.headers.get('Content-Type', '').lower()
+        is_html = 'text/html' in content_type or response.text.strip().startswith('<!DOCTYPE') or response.text.strip().startswith('<html')
+        
+        if is_html:
+            # Check for common Google error messages in the HTML
+            response_text_lower = response.text[:2000].lower()
+            if 'login' in response_text_lower or 'signin' in response_text_lower:
+                return {
+                    'success': False,
+                    'error': '⚠️ Google Sheets access denied. Please ensure the sheet is shared with "Anyone with the link can view" (not just "Anyone in your organization").'
+                }
+            elif 'not found' in response_text_lower:
+                return {
+                    'success': False,
+                    'error': '❌ Sheet not found. Please check if the URL is correct and the sheet exists.'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': '🔒 Cannot access sheet. Please make sure:\n1. Sheet is shared with "Anyone with the link can view"\n2. Link is copied correctly\n3. Sheet is not private or restricted'
+                }
+        
+        if response.status_code != 200:
+            return {
+                'success': False,
+                'error': f'Failed to download sheet (HTTP {response.status_code}). Please check the sheet permissions.'
+            }
+        
+        # Check if we actually got an Excel file (magic number check)
+        if len(response.content) < 100:
+            return {
+                'success': False,
+                'error': 'Downloaded file is too small. The sheet might be empty or inaccessible.'
+            }
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+            tmp.write(response.content)
+            tmp_path = tmp.name
+        
+        try:
+            parties = parse_excel(tmp_path)
+            
+            if not parties:
+                return {
+                    'success': False,
+                    'error': 'No valid party data found in the sheet. Please check the format.'
+                }
+            
+            # Check if data has changed
+            current_hash = get_data_hash(parties)
+            old_parties = load_data()
+            old_hash = get_data_hash(old_parties)
+            
+            has_changes = (current_hash != old_hash)
+            
+            save_data(parties)
+            
+            # Store sync info
+            last_gsheet_url = sheet_url
+            last_sync_time = datetime.now().isoformat()
+            last_sync_hash = current_hash
+            
+            # Save config
+            save_gsheet_config(sheet_url, last_sync_time, current_hash)
+            
+            summary = get_summary(parties)
+            
+            return {
+                'success': True,
+                'parties_count': len(parties),
+                'summary': summary,
+                'has_changes': has_changes,
+                'sync_time': last_sync_time
+            }
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+                
+    except requests.exceptions.Timeout:
+        return {'success': False, 'error': 'Connection timeout. Please check your internet connection.'}
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'error': 'Cannot connect to Google Sheets. Please check your network.'}
+    except Exception as e:
+        return {'success': False, 'error': f'Error: {str(e)}'}
 
 @app.route('/api/google-sheet', methods=['POST'])
 @login_required
@@ -562,6 +682,50 @@ def send_reminder():
         'message': f'Reminder sent to {party_name}',
         'party': party
     })
+
+
+@app.route('/api/upload', methods=['POST'])
+@login_required
+def upload_file():
+    """Handle Excel file upload"""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'No file selected'}), 400
+    
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'error': 'Please upload an Excel file (.xlsx or .xls)'}), 400
+    
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+            file.save(tmp.name)
+            tmp_path = tmp.name
+        
+        try:
+            parties = parse_excel(tmp_path)
+            if not parties:
+                return jsonify({'success': False, 'error': 'No valid party data found in the file'}), 400
+            
+            save_data(parties)
+            
+            # Clear Google Sheet config
+            if os.path.exists(GSHEET_CONFIG_FILE):
+                os.remove(GSHEET_CONFIG_FILE)
+            
+            return jsonify({
+                'success': True,
+                'message': f'Successfully uploaded {len(parties)} parties'
+            })
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Error processing file: {str(e)}'}), 500
+
 
 @app.route('/api/bucket-parties/<bucket_key>')
 @login_required
