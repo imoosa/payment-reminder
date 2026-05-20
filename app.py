@@ -8,10 +8,14 @@ import hashlib
 import tempfile
 import re
 import requests
+import glob
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = 'maktronic_secret_2024_change_in_production'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+
+
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 USERS = {
@@ -37,6 +41,9 @@ last_sync_data = None  # Store last synced data for comparison
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 DATA_FILE = os.path.join(DATA_DIR, 'debtors.json')
 GSHEET_CONFIG_FILE = os.path.join(DATA_DIR, 'gsheet_config.json')
+UPLOAD_FOLDER = os.path.join(DATA_DIR, 'uploads')
+ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 BUCKETS = [
     {'key': 'lt30',    'label': '< 30 Days',     'col': 5,  'min': 0,   'max': 29},
@@ -47,6 +54,25 @@ BUCKETS = [
     {'key': 'gt180',   'label': '> 180 Days',    'col': 15, 'min': 180, 'max': 9999},
 ]
 
+
+
+
+def get_saved_files():
+    """Get list of uploaded Excel files"""
+    files = []
+    if os.path.exists(UPLOAD_FOLDER):
+        for file_path in glob.glob(os.path.join(UPLOAD_FOLDER, '*.xlsx')):
+            file_path = glob.glob(os.path.join(UPLOAD_FOLDER, '*.xls'))
+        for file_path in glob.glob(os.path.join(UPLOAD_FOLDER, '*.*')):
+            if file_path.endswith(('.xlsx', '.xls')):
+                stat = os.stat(file_path)
+                files.append({
+                    'name': os.path.basename(file_path),
+                    'size': stat.st_size,
+                    'modified': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                    'path': file_path
+                })
+    return sorted(files, key=lambda x: x['modified'], reverse=True)
 def load_gsheet_config():
     """Load saved Google Sheet configuration"""
     if os.path.exists(GSHEET_CONFIG_FILE):
@@ -70,7 +96,7 @@ def save_gsheet_config(url, sync_time, data_hash):
         json.dump(config, f, indent=2)
 
 def parse_excel(filepath):
-    """Parse Excel file with proper error handling and column detection"""
+    
     try:
         # Try to read the Excel file with header detection
         df = pd.read_excel(filepath, sheet_name=None)  # Read all sheets
@@ -250,6 +276,111 @@ def bucket_view(bucket_key):
                            bucket_label=label, bucket_total=bucket_total,
                            buckets=BUCKETS, user=session['user'],
                            parties_json=json.dumps(bucket_parties))
+
+# Add this to app.py after the existing routes
+
+@app.route('/api/delete-party/<path:party_name>', methods=['DELETE'])
+@login_required
+def delete_party(party_name):
+    """Delete a specific party by name"""
+    parties = load_data()
+    
+    # Find and remove the party
+    party_to_delete = None
+    for i, p in enumerate(parties):
+        if p['name'] == party_name:
+            party_to_delete = parties.pop(i)
+            break
+    
+    if party_to_delete:
+        save_data(parties)
+        
+        # Also clear Google Sheet config if it exists (data is now different)
+        # This prevents auto-sync from re-adding the deleted party
+        if os.path.exists(GSHEET_CONFIG_FILE):
+            config = load_gsheet_config()
+            if config:
+                # Update hash to reflect deletion
+                new_hash = get_data_hash(parties)
+                config['data_hash'] = new_hash
+                save_gsheet_config(config['url'], config['sync_time'], new_hash)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully deleted {party_name}',
+            'party': party_to_delete
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': f'Party "{party_name}" not found'
+        }), 404
+
+
+@app.route('/api/delete-parties-bulk', methods=['POST'])
+@login_required
+def delete_parties_bulk():
+    """Delete multiple parties by their names"""
+    data = request.get_json()
+    party_names = data.get('party_names', [])
+    
+    if not party_names:
+        return jsonify({'error': 'No parties selected for deletion'}), 400
+    
+    parties = load_data()
+    deleted = []
+    not_found = []
+    
+    for party_name in party_names:
+        found = False
+        for i, p in enumerate(parties):
+            if p['name'] == party_name:
+                deleted.append(parties.pop(i))
+                found = True
+                break
+        if not found:
+            not_found.append(party_name)
+    
+    if deleted:
+        save_data(parties)
+        
+        # Update Google Sheet hash to prevent auto-sync from re-adding
+        if os.path.exists(GSHEET_CONFIG_FILE):
+            config = load_gsheet_config()
+            if config:
+                new_hash = get_data_hash(parties)
+                config['data_hash'] = new_hash
+                save_gsheet_config(config['url'], config['sync_time'], new_hash)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully deleted {len(deleted)} parties',
+            'deleted_count': len(deleted),
+            'deleted_parties': [p['name'] for p in deleted],
+            'not_found': not_found
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'No parties were deleted'
+        }), 400
+
+
+@app.route('/api/bulk-action', methods=['POST'])
+@login_required
+def bulk_action():
+    """Handle bulk actions (delete, etc.) on multiple parties"""
+    data = request.get_json()
+    action = data.get('action')
+    party_names = data.get('party_names', [])
+    
+    if not party_names:
+        return jsonify({'error': 'No parties selected'}), 400
+    
+    if action == 'delete':
+        return delete_parties_bulk()
+    else:
+        return jsonify({'error': f'Unknown action: {action}'}), 400
 
 @app.route('/party/<path:party_name>')
 @login_required
@@ -684,6 +815,17 @@ def send_reminder():
     })
 
 
+
+
+@app.route('/api/files', methods=['GET'])
+@login_required
+def get_files():
+    """Get list of uploaded files"""
+    files = get_saved_files()
+    return jsonify({'files': files})
+
+# Add this missing endpoint after the other routes (around line 380)
+
 @app.route('/api/upload', methods=['POST'])
 @login_required
 def upload_file():
@@ -699,33 +841,125 @@ def upload_file():
         return jsonify({'success': False, 'error': 'Please upload an Excel file (.xlsx or .xls)'}), 400
     
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            file.save(tmp.name)
-            tmp_path = tmp.name
-        
+        # Save file permanently to UPLOAD_FOLDER
+        filename = secure_filename(file.filename)
+        saved_file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(saved_file_path)
+
         try:
-            parties = parse_excel(tmp_path)
+            # Parse the saved Excel file
+            parties = parse_excel(saved_file_path)
+
             if not parties:
+                # Remove saved file if parsing failed
+                try:
+                    os.unlink(saved_file_path)
+                except:
+                    pass
                 return jsonify({'success': False, 'error': 'No valid party data found in the file'}), 400
-            
+
+            # Save to data file
             save_data(parties)
-            
-            # Clear Google Sheet config
+
+            # Clear Google Sheet config if exists (since manual upload overrides)
             if os.path.exists(GSHEET_CONFIG_FILE):
                 os.remove(GSHEET_CONFIG_FILE)
-            
+
+            summary = get_summary(parties)
+
             return jsonify({
                 'success': True,
-                'message': f'Successfully uploaded {len(parties)} parties'
+                'message': f'Successfully uploaded {len(parties)} parties',
+                'summary': summary,
+                'filename': filename
             })
-        finally:
+
+        except Exception as parse_err:
+            # Remove saved file if parsing failed
             try:
-                os.unlink(tmp_path)
+                os.unlink(saved_file_path)
             except:
                 pass
+            raise parse_err
+
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error processing file: {str(e)}'}), 500
 
+@app.route('/api/delete-file', methods=['DELETE'])
+@login_required
+def delete_file():
+    """Delete an uploaded file"""
+    data = request.get_json()
+    filename = data.get('filename')
+    
+    if not filename:
+        return jsonify({'success': False, 'error': 'Filename required'}), 400
+    
+    # Security: prevent path traversal
+    filename = secure_filename(filename)
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    
+    if not os.path.exists(file_path):
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+    
+    try:
+        os.unlink(file_path)
+
+        # Also clear the party data (debtors.json) since the source file is deleted
+        if os.path.exists(DATA_FILE):
+            os.remove(DATA_FILE)
+
+        # Clear Google Sheet config if exists
+        if os.path.exists(GSHEET_CONFIG_FILE):
+            os.remove(GSHEET_CONFIG_FILE)
+
+        return jsonify({'success': True, 'message': f'Deleted {filename} and cleared all associated data'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/load-file', methods=['POST'])
+@login_required
+def load_file():
+    """Load data from a previously uploaded file"""
+    data = request.get_json()
+    filename = data.get('filename')
+    
+    if not filename:
+        return jsonify({'success': False, 'error': 'Filename required'}), 400
+    
+    filename = secure_filename(filename)
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    
+    if not os.path.exists(file_path):
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+    
+    try:
+        parties = parse_excel(file_path)
+        if not parties:
+            return jsonify({'success': False, 'error': 'No valid party data found in the file'}), 400
+        
+        save_data(parties)
+        
+        # Clear Google Sheet config
+        if os.path.exists(GSHEET_CONFIG_FILE):
+            os.remove(GSHEET_CONFIG_FILE)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Loaded {len(parties)} parties from {filename}',
+            'parties_count': len(parties)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/disconnect-sheet', methods=['POST'])
+@login_required
+def disconnect_sheet():
+    """Disconnect Google Sheet connection"""
+    if os.path.exists(GSHEET_CONFIG_FILE):
+        os.remove(GSHEET_CONFIG_FILE)
+        return jsonify({'success': True, 'message': 'Google Sheet disconnected'})
+    return jsonify({'success': True, 'message': 'No active connection'})
 
 @app.route('/api/bucket-parties/<bucket_key>')
 @login_required
