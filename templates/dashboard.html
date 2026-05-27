@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – WGS Payment Tracker{% endblock %}
+{% block page_title %}
+  <span style="display:flex;align-items:center;gap:10px;">
+    📊 Aging Buckets Dashboard
+  </span>
+{% endblock %}
+{% block topbar_right %}
+
+<a href="{{ url_for('upload') }}" class="btn btn-primary">📁 Upload Excel</a>
+{% endblock %}
+
+{% block content %}
+<!-- Stat Cards -->
+<div class="stat-grid">
+  <div class="stat-card" style="--accent-color:#6c63ff;">
+    <div class="stat-label">Total Parties</div>
+    <div class="stat-value">{{ data.total_parties }}</div>
+    <div class="stat-sub">Unique vendors / customers</div>
+  </div>
+  <div class="stat-card" style="--accent-color:#f87171; --val-color:#f87171;">
+    <div class="stat-label">Total Pending Bills</div>
+    <div class="stat-value">{{ data.total_pending | inr }}</div>
+    <div class="stat-sub">{{ data.total_bills }} invoices outstanding</div>
+  </div>
+  <div class="stat-card" style="--accent-color:#fbbf24; --val-color:#fbbf24;">
+    <div class="stat-label">Action Required</div>
+    <div class="stat-value">{{ data.action_required }}</div>
+    <div class="stat-sub">Bills overdue &gt; 30 days</div>
+  </div>
+  <div class="stat-card" style="--accent-color:#2dd4bf; --val-color:#2dd4bf;">
+    <div class="stat-label">Critical (>180 days)</div>
+    <div class="stat-value">
+      {% for b in data.buckets %}{% if b.name == '> 180 DAYS' %}{{ b.party_count }}{% endif %}{% endfor %}
+    </div>
+    <div class="stat-sub">Parties needing urgent follow-up</div>
+  </div>
+</div>
+
+<!-- Charts Row -->
+<div class="charts-grid">
+  <div class="chart-card">
+    <div class="chart-title">📈 Pending Amount by Bucket</div>
+    <canvas id="barChart" height="200"></canvas>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">🥧 Distribution by Days</div>
+    <canvas id="donutChart" height="200"></canvas>
+  </div>
+</div>
+
+<!-- Aging Breakdown -->
+<div class="card" style="margin-bottom:24px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+    <div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;">📅 Aging Breakdown</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:3px;">
+        Click any row to view parties · 
+        <span style="border-bottom:1px dotted var(--muted);" title="Amount shown is the total pending amount for that aging bucket">ⓘ Amount = Total Pending in this bucket</span>
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);">Total Outstanding: {{ data.total_pending | inr }}</div>
+  </div>
+
+  {% set bucket_colors = ['#2dd4bf','#60a5fa','#fbbf24','#fb923c','#f87171','#e879f9'] %}
+  {% for b in data.buckets %}
+  <a href="{{ url_for('parties', bucket=b.name) }}" class="bucket-row bc-{{ loop.index0 }}">
+    <div class="bucket-name" style="font-size:13px;">{{ b.name }}</div>
+    <div class="bucket-badge">{{ b.party_count }} parties</div>
+    <div class="bucket-bar-wrap">
+      <div class="bucket-bar" style="width:{{ b.pct }}%;background:{{ bucket_colors[loop.index0] }};"></div>
+    </div>
+    <div class="bucket-amount" style="color:{{ bucket_colors[loop.index0] }};">{{ b.amount | inr }}</div>
+  </a>
+  {% endfor %}
+</div>
+
+<!-- Top Overdue Parties -->
+{% if data.top_parties %}
+<div class="card">
+  <div style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;margin-bottom:20px;">🔥 Top Overdue Parties</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Party Name</th>
+          <th>Pending Amount</th>
+          <th>Overdue Days</th>
+          <th>Risk</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in data.top_parties %}
+        <tr>
+          <td style="color:var(--muted);">{{ loop.index }}</td>
+          <td><strong>{{ p.name }}</strong></td>
+          <td style="font-family:'Space Grotesk',sans-serif;font-weight:700;color:#f87171;">{{ p.pending | inr }}</td>
+          <td>{{ p.days }} days</td>
+          <td>
+            {% if p.days > 180 %}
+              <span class="badge badge-red">Critical</span>
+            {% elif p.days > 120 %}
+              <span class="badge badge-orange">High</span>
+            {% elif p.days > 60 %}
+              <span class="badge badge-yellow">Medium</span>
+            {% else %}
+              <span class="badge badge-green">Low</span>
+            {% endif %}
+          </td>
+          <td><a href="{{ url_for('parties', q=p.name) }}" class="btn btn-outline" style="padding:5px 12px;font-size:12px;">View →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:60px;">
+  <div style="font-size:48px;margin-bottom:12px;">📂</div>
+  <div style="font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;margin-bottom:8px;">No Data Yet</div>
+  <div style="color:var(--muted);margin-bottom:20px;">Upload an Excel file to get started</div>
+  <div style="display:flex;gap:12px;justify-content:center;">
+    <a href="{{ url_for('upload') }}" class="btn btn-primary">📁 Upload Excel</a>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const BUCKET_ORDER = {{ data.bucket_order | tojson }};
+const BUCKET_COLORS = ['#2dd4bf','#60a5fa','#fbbf24','#fb923c','#f87171','#e879f9'];
+
+async function loadCharts() {
+  const res = await fetch('/api/chart-data');
+  const d = await res.json();
+
+  // Bar chart
+  new Chart(document.getElementById('barChart'), {
+    type: 'bar',
+    data: {
+      labels: d.labels,
+      datasets: [{
+        label: 'Pending (₹)',
+        data: d.amounts,
+        backgroundColor: BUCKET_COLORS.map(c => c + '99'),
+        borderColor: BUCKET_COLORS,
+        borderWidth: 2,
+        borderRadius: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ' ₹' + ctx.raw.toLocaleString('en-IN')
+          }
+        }
+      },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#7a82a0', font: { size: 10 } } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#7a82a0', font: { size: 10 },
+          callback: v => v >= 1e5 ? '₹' + (v/1e5).toFixed(0) + 'L' : '₹' + v.toLocaleString('en-IN')
+        }}
+      }
+    }
+  });
+
+  // Donut chart
+  const nonZero = d.labels.filter((_, i) => d.counts[i] > 0);
+  const counts  = d.counts.filter(v => v > 0);
+  const colors  = BUCKET_COLORS.filter((_, i) => d.counts[i] > 0);
+
+  new Chart(document.getElementById('donutChart'), {
+    type: 'doughnut',
+    data: {
+      labels: nonZero,
+      datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }]
+    },
+    options: {
+      responsive: true,
+      cutout: '65%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: '#7a82a0', font: { size: 11 }, padding: 12, boxWidth: 12 }
+        }
+      }
+    }
+  });
+}
+loadCharts();
+</script>
+{% endblock %}

@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Google Sheets – WGS{% endblock %}
+{% block page_title %}🔗 Google Sheets Integration{% endblock %}
+
+{% block content %}
+<div style="max-width:760px;">
+
+{% if gs and gs.is_active %}
+<div style="padding:14px 18px;background:rgba(45,212,191,.08);border:1px solid rgba(45,212,191,.25);border-radius:12px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;">
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div class="pulse"></div>
+    <div>
+      <strong style="color:#2dd4bf;">Connected</strong>
+      <span style="color:var(--muted);font-size:13px;margin-left:8px;">
+        {% if gs.sheet_url %}via Public Link{% else %}via Service Account{% endif %}
+        · Last synced: {{ gs.last_synced.strftime('%d %b %Y %H:%M') if gs.last_synced else 'Never' }}
+      </span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;">
+    <form method="post" style="display:inline;">
+      <input type="hidden" name="action" value="sync">
+      <button type="submit" class="btn btn-success" style="padding:8px 16px;font-size:13px;">🔄 Sync Now</button>
+    </form>
+    <button class="btn btn-danger" style="padding:8px 16px;font-size:13px;" onclick="disconnectSheet()">🔌 Disconnect</button>
+  </div>
+</div>
+{% endif %}
+
+<!-- Method 1: Public Link -->
+<div class="card" style="margin-bottom:20px;border-color:rgba(108,99,255,.35);">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+    <span style="background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:1px;">EASY</span>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;">🔗 Connect via Google Sheet Link</div>
+  </div>
+  <div style="color:var(--muted);font-size:13px;margin-bottom:20px;">
+    Just paste your Google Sheet URL — no credentials needed. Sheet must be <strong style="color:#fbbf24;">Anyone with the link → Viewer</strong>.
+  </div>
+
+  <form method="post">
+    <input type="hidden" name="action" value="save">
+
+    <div class="form-group">
+      <label class="form-label">Google Sheet URL</label>
+      <input type="url" name="sheet_url" class="form-input" 
+             value="{{ gs.sheet_url if gs and gs.sheet_url else '' }}"
+             placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFM.../edit">
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+        Paste the full URL from your browser's address bar.
+      </div>
+    </div>
+
+    <div style="padding:14px;background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:10px;font-size:13px;margin-bottom:20px;">
+      <div style="font-weight:700;color:#fbbf24;margin-bottom:10px;">📋 How to make your sheet public</div>
+      <div style="display:flex;flex-direction:column;gap:8px;color:var(--muted);">
+        <div>1. Open your Google Sheet → click <strong>Share</strong> (top right)</div>
+        <div>2. Click <strong>"Change to anyone with the link"</strong></div>
+        <div>3. Make sure role is <strong>Viewer</strong> → click <strong>Done</strong></div>
+        <div>4. Copy the URL from your address bar and paste it above</div>
+      </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">💾 Save & Connect</button>
+  </form>
+</div>
+
+<!-- Method 2: Service Account -->
+<details style="margin-bottom:20px;">
+  <summary style="cursor:pointer;padding:16px 20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;list-style:none;display:flex;align-items:center;gap:10px;">
+    <span style="background:rgba(255,255,255,.08);color:var(--muted);font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:1px;">ADVANCED</span>
+    🔐 Connect via Service Account (Private Sheets)
+    <span style="margin-left:auto;color:var(--muted);font-size:12px;">Click to expand ▾</span>
+  </summary>
+
+  <div class="card" style="margin-top:0;border-top:none;border-radius:0 0 var(--radius) var(--radius);">
+    <div style="color:var(--muted);font-size:13px;margin-bottom:20px;padding-top:4px;">
+      Use this for private sheets. Requires Google Cloud Service Account JSON key.
+    </div>
+    <form method="post">
+      <input type="hidden" name="action" value="save">
+
+      <div class="form-group">
+        <label class="form-label">Google Sheet ID</label>
+        <input type="text" name="sheet_id" class="form-input"
+               value="{{ gs.sheet_id if gs and not gs.sheet_url else '' }}"
+               placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Sheet / Tab Name</label>
+        <input type="text" name="sheet_name" class="form-input"
+               value="{{ gs.sheet_name if gs else 'Sheet1' }}" placeholder="Sheet1">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Service Account Credentials (JSON)</label>
+        <textarea name="credentials_json" class="form-input form-textarea"
+                  style="min-height:160px;font-family:monospace;font-size:12px;"
+                  placeholder='Paste your service account JSON here'>{{ gs.credentials_json if gs and gs.credentials_json else '' }}</textarea>
+      </div>
+
+      <button type="submit" class="btn btn-primary">💾 Save Service Account Config</button>
+    </form>
+  </div>
+</details>
+
+<!-- Danger Zone -->
+<div class="card" style="margin-top:20px;border-color:rgba(248,113,113,.3);">
+  <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;color:#f87171;margin-bottom:16px;">⚠️ Danger Zone</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.15);border-radius:10px;margin-bottom:10px;">
+    <div>
+      <div style="font-weight:600;font-size:14px;">Disconnect Google Sheet</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;">Removes the sheet connection and clears all data</div>
+    </div>
+    <button class="btn btn-danger" onclick="disconnectSheet()">🔌 Disconnect & Clear</button>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.15);border-radius:10px;">
+    <div>
+      <div style="font-weight:600;font-size:14px;">Clear All Party Data</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;">Deletes all records but keeps the sheet connection</div>
+    </div>
+    <button class="btn btn-danger" onclick="clearData()">🗑️ Clear Data Only</button>
+  </div>
+</div>
+
+</div>
+
+<script>
+async function disconnectSheet() {
+  if (!confirm('⚠️ This will disconnect the Google Sheet and delete ALL data. Are you sure?')) return;
+  const res = await fetch('/api/disconnect-gsheets', { method: 'POST' });
+  const d = await res.json();
+  if (d.success) { 
+    alert('✅ Disconnected and data cleared.'); 
+    location.href = '/gsheets';
+  } else alert('❌ ' + d.error);
+}
+
+async function clearData() {
+  if (!confirm('⚠️ This will delete ALL party records. Are you sure?')) return;
+  const res = await fetch('/api/clear-data', { method: 'POST' });
+  const d = await res.json();
+  if (d.success) { 
+    alert('✅ All data cleared.'); 
+    location.href = '/';
+  } else alert('❌ ' + d.error);
+}
+</script>
+{% endblock %}

@@ -1,1076 +1,863 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 import pandas as pd
-import json
 import os
-from datetime import datetime, date, timedelta
-import hashlib
-import tempfile
-import re
+from datetime import datetime, date
+from dateutil import parser as dateparser
+import traceback
 import requests
-import glob
-from werkzeug.utils import secure_filename
+import json
+import re
 
 app = Flask(__name__)
-app.secret_key = 'maktronic_secret_2024_change_in_production'
+app.secret_key = 'wgs-payment-secret-2024'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///payments.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'static', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# AiSensy Configuration
+AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ZmM2NjdjMzYyODIyMGUyN2YzN2JmYyIsIm5hbWUiOiJWZXJvZXhpbXVzIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ZjlkZmMwMGE4NDk1Mzc4YmY1ZjI5YyIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzgxNDg5ODh9.vC-f2uQBFylXeQ0Gq1qUYn_u-qM9UDVqhxMqnO7I-aE')
+AISENSY_BASE_URL = 'https://backend.aisensy.com/campaign/t1/api/v2'
+WHATSAPP_TEMPLATE_NAME = 'payment_reminder'  # Create this template in AiSensy dashboard
 
+db = SQLAlchemy(app)
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-USERS = {
-    'admin': hashlib.sha256('admin123'.encode()).hexdigest(),
-    'manager': hashlib.sha256('manager123'.encode()).hexdigest(),
-}
+# ── Models ──────────────────────────────────────────────────────────────
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Party(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    party_name = db.Column(db.String(255), nullable=False)
+    bill_no = db.Column(db.String(100))
+    bill_date = db.Column(db.Date)
+    due_date = db.Column(db.Date)
+    amount = db.Column(db.Float, default=0)
+    paid_amount = db.Column(db.Float, default=0)
+    pending_amount = db.Column(db.Float, default=0)
+    days_overdue = db.Column(db.Integer, default=0)
+    bucket = db.Column(db.String(50))
+    bucket_pending = db.Column(db.Float, default=0)
+    contact = db.Column(db.String(100))
+    email = db.Column(db.String(150))
+    remarks = db.Column(db.String(500))
+    last_updated = db.Column(db.DateTime, default=datetime.utcnow)
+    uploaded_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class WhatsAppLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    party_id = db.Column(db.Integer, db.ForeignKey('party.id'), nullable=True)
+    party_name = db.Column(db.String(255))
+    phone_number = db.Column(db.String(20))
+    message = db.Column(db.Text)
+    status = db.Column(db.String(50))
+    response = db.Column(db.Text)
+    sent_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_bulk = db.Column(db.Boolean, default=False)
+    bulk_id = db.Column(db.String(100))
+
+with app.app_context():
+    db.drop_all()
+    db.create_all()
+    # Create default admin user if not exists
+    if not User.query.filter_by(username='admin').first():
+        admin = User(username='admin', password_hash=generate_password_hash('admin123'))
+        db.session.add(admin)
+        db.session.commit()
+        print("Default admin user created - Username: admin, Password: admin123")
+
+# ── Authentication Decorator ──────────────────────────────────────────────
 def login_required(f):
     @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user' not in session:
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please login to access this page', 'error')
             return redirect(url_for('login'))
         return f(*args, **kwargs)
-    return decorated
+    return decorated_function
 
-# Global variables for auto-refresh
-last_gsheet_url = None
-last_sync_time = None
-last_sync_hash = None
-last_sync_data = None  # Store last synced data for comparison
+# ── WhatsApp Helper Functions ──────────────────────────────────────────────
+def clean_phone_number(phone):
+    """Clean and validate phone number for WhatsApp"""
+    if not phone:
+        return None
+    # Remove all non-digit characters
+    cleaned = re.sub(r'\D', '', str(phone))
+    # Ensure it starts with country code (assuming India +91)
+    if len(cleaned) == 10:
+        cleaned = '91' + cleaned
+    elif len(cleaned) == 12 and cleaned.startswith('91'):
+        pass
+    elif len(cleaned) > 12:
+        # Take last 12 digits if longer
+        cleaned = cleaned[-12:]
+    else:
+        return None
+    return cleaned
 
-# ── Data helpers ──────────────────────────────────────────────────────────────
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
-DATA_FILE = os.path.join(DATA_DIR, 'debtors.json')
-GSHEET_CONFIG_FILE = os.path.join(DATA_DIR, 'gsheet_config.json')
-UPLOAD_FOLDER = os.path.join(DATA_DIR, 'uploads')
-ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-BUCKETS = [
-    {'key': 'lt30',    'label': '< 30 Days',     'col': 5,  'min': 0,   'max': 29},
-    {'key': '30_60',   'label': '30 – 60 Days',  'col': 7,  'min': 30,  'max': 59},
-    {'key': '60_90',   'label': '60 – 90 Days',  'col': 9,  'min': 60,  'max': 89},
-    {'key': '90_120',  'label': '90 – 120 Days', 'col': 11, 'min': 90,  'max': 119},
-    {'key': '120_180', 'label': '120 – 180 Days','col': 13, 'min': 120, 'max': 179},
-    {'key': 'gt180',   'label': '> 180 Days',    'col': 15, 'min': 180, 'max': 9999},
-]
-
-
-
-
-def get_saved_files():
-    """Get list of uploaded Excel files"""
-    files = []
-    if os.path.exists(UPLOAD_FOLDER):
-        for file_path in glob.glob(os.path.join(UPLOAD_FOLDER, '*.xlsx')):
-            file_path = glob.glob(os.path.join(UPLOAD_FOLDER, '*.xls'))
-        for file_path in glob.glob(os.path.join(UPLOAD_FOLDER, '*.*')):
-            if file_path.endswith(('.xlsx', '.xls')):
-                stat = os.stat(file_path)
-                files.append({
-                    'name': os.path.basename(file_path),
-                    'size': stat.st_size,
-                    'modified': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                    'path': file_path
-                })
-    return sorted(files, key=lambda x: x['modified'], reverse=True)
-def load_gsheet_config():
-    """Load saved Google Sheet configuration"""
-    if os.path.exists(GSHEET_CONFIG_FILE):
-        try:
-            with open(GSHEET_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            pass
-    return None
-
-def save_gsheet_config(url, sync_time, data_hash):
-    """Save Google Sheet configuration"""
-    config = {
-        'url': url,
-        'sync_time': sync_time,
-        'data_hash': data_hash,
-        'last_sync': datetime.now().isoformat()
+def send_whatsapp_message(party_id, party_name, phone_number, pending_amount, bucket_name, bucket_amount):
+    """Send WhatsApp message using AiSensy API"""
+    cleaned_phone = clean_phone_number(phone_number)
+    if not cleaned_phone:
+        return {'success': False, 'error': 'Invalid phone number'}
+    
+    # Format amount in Indian Rupees
+    formatted_pending = f"₹{pending_amount:,.2f}"
+    formatted_bucket_amount = f"₹{bucket_amount:,.2f}"
+    
+    # Template variables in order
+    variables = [
+        party_name,           # {{1}} - Party name
+        formatted_pending,    # {{2}} - Total Amount Pending
+        bucket_name,          # {{3}} - Aging bucket days
+        formatted_bucket_amount  # {{4}} - Aging bucket amount
+    ]
+    
+    payload = {
+        "apiKey": AISENSY_API_KEY,
+        "campaignName": WHATSAPP_TEMPLATE_NAME,
+        "destination": cleaned_phone,
+        "userName": party_name,
+        "source": "api",
+        "templateParams": variables,
+        "tags": ["payment_reminder", "wgs_system"],
+        "attributes": {}
     }
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(GSHEET_CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2)
-
-def parse_excel(filepath):
     
     try:
-        # Try to read the Excel file with header detection
-        df = pd.read_excel(filepath, sheet_name=None)  # Read all sheets
+        response = requests.post(
+            f"{AISENSY_BASE_URL}/send",
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=30
+        )
         
-        # Find the Sundry Debtors sheet or use first sheet
-        sheet_name = 'Sundry Debtors'
-        if sheet_name not in df:
-            sheet_name = list(df.keys())[0]  # Use first sheet if not found
-        
-        df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
-        
-        parties = []
-        
-        # Find the start of data (look for first non-empty row with party name)
-        start_row = 0
-        for idx, row in df.iterrows():
-            first_col = str(row[0]) if pd.notna(row[0]) else ''
-            # Look for actual party data (not headers)
-            if first_col and first_col != 'nan' and len(first_col.strip()) > 2:
-                start_row = idx
-                break
-        
-        if start_row == 0:
-            start_row = 16  # fallback to original offset if detection fails
-        
-        # Process rows from start_row onwards
-        for idx, row in df.iloc[start_row:].iterrows():
-            name_raw = str(row[0]) if pd.notna(row[0]) else ''
-            if not name_raw or name_raw == 'nan' or len(name_raw.strip()) == 0:
-                continue
-            
-            # Get total from column 3
-            try:
-                total = float(row[3]) if pd.notna(row[3]) else 0
-            except (ValueError, TypeError):
-                total = 0
-            
-            # Skip if no pending amount
-            if total == 0:
-                continue
-
-            # Split name and location (format: "Party Name - Location")
-            parts = name_raw.rsplit(' - ', 1)
-            name = parts[0].strip()
-            location = parts[1].strip() if len(parts) == 2 else ''
-
-            # Get contact info
-            contact_person = str(row[1]).strip() if pd.notna(row[1]) and str(row[1]) != 'nan' else ''
-            phone = str(row[2]).strip() if pd.notna(row[2]) and str(row[2]) != 'nan' else ''
-
-            # Parse bucket amounts
-            buckets = {}
-            for b in BUCKETS:
-                try:
-                    val = float(row[b['col']]) if pd.notna(row[b['col']]) else 0
-                    if val > 0:
-                        buckets[b['key']] = round(val, 2)
-                except (ValueError, TypeError):
-                    val = 0
-            
-            # Skip if no bucket amounts
-            if not buckets:
-                # Calculate from total if needed (fallback)
-                if total > 0:
-                    buckets = {'lt30': round(total, 2)}
-
-            parties.append({
-                'name': name,
-                'location': location,
-                'contact_person': contact_person,
-                'phone': phone,
-                'total_pending': round(total, 2),
-                'buckets': buckets,
-                'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            })
-        
-        # Remove duplicates (keep the one with more data)
-        unique_parties = {}
-        for p in parties:
-            if p['name'] not in unique_parties:
-                unique_parties[p['name']] = p
-            else:
-                # Merge bucket amounts if party exists
-                existing = unique_parties[p['name']]
-                for k, v in p['buckets'].items():
-                    existing['buckets'][k] = existing['buckets'].get(k, 0) + v
-                existing['total_pending'] = sum(existing['buckets'].values())
-        
-        return list(unique_parties.values())
-    
+        if response.status_code == 200:
+            result = response.json()
+            return {'success': True, 'response': result}
+        else:
+            return {'success': False, 'error': f'HTTP {response.status_code}: {response.text}'}
     except Exception as e:
-        raise Exception(f"Error parsing Excel: {str(e)}")
+        return {'success': False, 'error': str(e)}
 
-def load_data():
-    """Load data from JSON file"""
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return []
-    return []
-
-def save_data(parties):
-    """Save data to JSON file"""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(parties, f, indent=2, ensure_ascii=False)
-
-def get_summary(parties):
-    """Calculate summary statistics"""
-    totals = {b['key']: 0.0 for b in BUCKETS}
-    counts = {b['key']: 0 for b in BUCKETS}
-    grand_total = 0.0
+def send_bulk_whatsapp_messages(parties, bulk_id=None):
+    """Send bulk WhatsApp messages to multiple parties"""
+    results = []
+    success_count = 0
+    fail_count = 0
     
-    for p in parties:
-        grand_total += p['total_pending']
-        for bkey, bval in p['buckets'].items():
-            if bkey in totals:
-                totals[bkey] = round(totals.get(bkey, 0) + bval, 2)
-                counts[bkey] = counts.get(bkey, 0) + 1
+    for party in parties:
+        # Extract phone number (first one if multiple)
+        phone = party.contact.split(',')[0].strip() if party.contact else None
+        
+        if not phone:
+            results.append({
+                'party_id': party.id,
+                'party_name': party.party_name,
+                'success': False,
+                'error': 'No phone number available'
+            })
+            fail_count += 1
+            continue
+        
+        # Get bucket amount for this party
+        bucket_amount = party.bucket_pending if party.bucket_pending > 0 else party.pending_amount
+        
+        result = send_whatsapp_message(
+            party.id,
+            party.party_name,
+            phone,
+            party.pending_amount,
+            party.bucket,
+            bucket_amount
+        )
+        
+        # Log the attempt
+        log = WhatsAppLog(
+            party_id=party.id,
+            party_name=party.party_name,
+            phone_number=phone,
+            message=f"Reminder for {party.party_name}: Pending {party.pending_amount}",
+            status='success' if result['success'] else 'failed',
+            response=json.dumps(result),
+            is_bulk=True,
+            bulk_id=bulk_id
+        )
+        db.session.add(log)
+        
+        if result['success']:
+            success_count += 1
+            results.append({
+                'party_id': party.id,
+                'party_name': party.party_name,
+                'success': True
+            })
+        else:
+            fail_count += 1
+            results.append({
+                'party_id': party.id,
+                'party_name': party.party_name,
+                'success': False,
+                'error': result.get('error', 'Unknown error')
+            })
+    
+    db.session.commit()
     
     return {
-        'totals': totals, 
-        'counts': counts, 
-        'grand_total': round(grand_total, 2), 
-        'total_parties': len(parties)
+        'total': len(parties),
+        'success': success_count,
+        'failed': fail_count,
+        'results': results
     }
 
-def get_data_hash(parties):
-    """Generate hash of the data for change detection"""
-    return hashlib.md5(json.dumps(parties, sort_keys=True).encode()).hexdigest()
+# ── Helpers ──────────────────────────────────────────────────────────────
+def parse_date_safe(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if str(val).strip() in ('', 'nan', 'NaT'):
+        return None
+    try:
+        if isinstance(val, (datetime, date)):
+            return val if isinstance(val, date) else val.date()
+        return dateparser.parse(str(val)).date()
+    except:
+        return None
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+def safe_float(val):
+    try:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return 0.0
+        return float(str(val).replace(',', '').strip() or 0)
+    except:
+        return 0.0
+
+def calc_bucket(days):
+    if days is None or days < 0:
+        return '< 30 DAYS'
+    if days < 30:
+        return '< 30 DAYS'
+    if days < 60:
+        return '30-60 DAYS'
+    if days < 90:
+        return '60-90 DAYS'
+    if days < 120:
+        return '90-120 DAYS'
+    if days < 180:
+        return '120-180 DAYS'
+    return '> 180 DAYS'
+
+BUCKET_ORDER = ['< 30 DAYS', '30-60 DAYS', '60-90 DAYS', '90-120 DAYS', '120-180 DAYS', '> 180 DAYS']
+
+BUCKET_COL_MAP = {
+    5:  ('< 30 DAYS',    15),
+    7:  ('30-60 DAYS',   45),
+    9:  ('60-90 DAYS',   75),
+    11: ('90-120 DAYS',  105),
+    13: ('120-180 DAYS', 150),
+    15: ('> 180 DAYS',   200),
+}
+
+def get_dashboard_data():
+    parties = Party.query.all()
+    unique_names = set(p.party_name for p in parties)
+    total_parties = len(unique_names)
+    total_pending = sum(p.pending_amount for p in parties)
+    total_bills = len(parties)
+
+    buckets = {b: {'count': 0, 'amount': 0, 'parties': set()} for b in BUCKET_ORDER}
+    for p in parties:
+        b = p.bucket or calc_bucket(p.days_overdue)
+        if b not in buckets:
+            b = '> 180 DAYS'
+        buckets[b]['count'] += 1
+        buckets[b]['amount'] += p.pending_amount
+        buckets[b]['parties'].add(p.party_name)
+
+    bucket_list = []
+    max_amt = max((buckets[b]['amount'] for b in BUCKET_ORDER), default=1) or 1
+    for b in BUCKET_ORDER:
+        bucket_list.append({
+            'name': b,
+            'count': buckets[b]['count'],
+            'party_count': len(buckets[b]['parties']),
+            'amount': buckets[b]['amount'],
+            'pct': round(buckets[b]['amount'] / max_amt * 100, 1)
+        })
+
+    party_totals = {}
+    for p in parties:
+        if p.party_name not in party_totals:
+            party_totals[p.party_name] = {'pending': 0, 'days': p.days_overdue}
+        party_totals[p.party_name]['pending'] += p.pending_amount
+        if p.days_overdue > party_totals[p.party_name]['days']:
+            party_totals[p.party_name]['days'] = p.days_overdue
+
+    top_parties = sorted(party_totals.items(), key=lambda x: x[1]['pending'], reverse=True)[:10]
+
+    action_required = len(set(
+        p.party_name for p in parties if p.days_overdue > 30
+    ))
+
+    return {
+        'total_parties': total_parties,
+        'total_pending': total_pending,
+        'total_bills': total_bills,
+        'action_required': action_required,
+        'buckets': bucket_list,
+        'top_parties': [{'name': k, 'pending': v['pending'], 'days': v['days']} for k, v in top_parties],
+        'bucket_order': BUCKET_ORDER,
+    }
+
+def detect_erp_header_row(df_raw):
+    for i in range(min(25, len(df_raw))):
+        row_vals = [str(v).strip().lower() for v in df_raw.iloc[i] if str(v).strip().lower() not in ('nan', '')]
+        if 'particulars' in row_vals:
+            return i
+    return None
+
+def parse_erp_format(df_raw, header_row, user_id=None):
+    data_start = header_row + 3
+    records = []
+
+    for idx in range(data_start, len(df_raw)):
+        row = df_raw.iloc[idx]
+        party_name = str(row.iloc[0]).strip()
+
+        if not party_name or party_name.lower() in ('nan', 'none', '', 'particulars'):
+            continue
+        if not any(c.isalpha() for c in party_name):
+            continue
+
+        contact_person = str(row.iloc[1]).strip() if len(row) > 1 else ''
+        phone = str(row.iloc[2]).strip() if len(row) > 2 else ''
+        if contact_person.lower() == 'nan':
+            contact_person = ''
+        if phone.lower() == 'nan':
+            phone = ''
+        phone = phone.replace('/', ',').replace(';', ',')
+        seen_phones = []
+        for num in phone.split(','):
+            n = num.strip()
+            if n and n not in seen_phones:
+                seen_phones.append(n)
+        phone = ', '.join(seen_phones)
+
+        pending_total = safe_float(row.iloc[3]) if len(row) > 3 else 0
+
+        primary_bucket = '> 180 DAYS'
+        days_overdue = 200
+        bucket_amount = 0
+        for col_idx, (bname, bdays) in BUCKET_COL_MAP.items():
+            if len(row) > col_idx and safe_float(row.iloc[col_idx]) > 0:
+                primary_bucket = bname
+                days_overdue = bdays
+                bucket_amount = safe_float(row.iloc[col_idx])
+                break
+
+        breakdown = []
+        for col_idx, (bname, _) in BUCKET_COL_MAP.items():
+            if len(row) > col_idx:
+                val = safe_float(row.iloc[col_idx])
+                if val > 0:
+                    breakdown.append(f"{bname}: ₹{val:,.0f}")
+        remarks = ' | '.join(breakdown) if breakdown else ''
+
+        records.append(Party(
+            party_name=party_name,
+            bill_no='',
+            bill_date=None,
+            due_date=None,
+            amount=pending_total,
+            paid_amount=0,
+            pending_amount=pending_total,
+            days_overdue=days_overdue,
+            bucket=primary_bucket,
+            bucket_pending=bucket_amount,
+            contact=phone or contact_person,
+            email='',
+            remarks=f"{contact_person} | {remarks}" if contact_person else remarks,
+            last_updated=datetime.utcnow(),
+            uploaded_by=user_id
+        ))
+    return records
+
+def process_dataframe(df_raw, user_id=None):
+    header_row = detect_erp_header_row(df_raw)
+    if header_row is not None:
+        return parse_erp_format(df_raw, header_row, user_id)
+
+    df = df_raw.copy()
+    df.columns = df.iloc[0]
+    df = df[1:].reset_index(drop=True)
+
+    col_map = {}
+    for col in df.columns:
+        low = str(col).lower().strip()
+        if any(x in low for x in ['party', 'customer', 'vendor', 'name', 'client']):
+            col_map[col] = 'party_name'
+        elif any(x in low for x in ['bill no', 'invoice no', 'voucher']):
+            col_map[col] = 'bill_no'
+        elif any(x in low for x in ['bill date', 'invoice date']):
+            col_map[col] = 'bill_date'
+        elif any(x in low for x in ['due date', 'payment due']):
+            col_map[col] = 'due_date'
+        elif any(x in low for x in ['amount', 'total', 'gross']):
+            col_map[col] = 'amount'
+        elif any(x in low for x in ['paid', 'received']):
+            col_map[col] = 'paid_amount'
+        elif any(x in low for x in ['pending', 'balance', 'outstanding']):
+            col_map[col] = 'pending_amount'
+        elif any(x in low for x in ['contact', 'mobile', 'phone', 'telephone']):
+            col_map[col] = 'contact'
+        elif 'email' in low:
+            col_map[col] = 'email'
+        elif any(x in low for x in ['remark', 'note', 'comment']):
+            col_map[col] = 'remarks'
+    df = df.rename(columns=col_map)
+
+    today = date.today()
+    records = []
+    for _, row in df.iterrows():
+        pname = str(row.get('party_name', '')).strip()
+        if not pname or pname.lower() in ('nan', 'none', ''):
+            continue
+        bill_date = parse_date_safe(row.get('bill_date'))
+        due_date = parse_date_safe(row.get('due_date'))
+        ref_date = due_date or bill_date
+        days_overdue = (today - ref_date).days if ref_date else 0
+        amt = safe_float(row.get('amount', 0))
+        paid = safe_float(row.get('paid_amount', 0))
+        pending = safe_float(row.get('pending_amount', 0)) or (amt - paid)
+        
+        raw_phone = str(row.get('contact', ''))
+        raw_phone = raw_phone.replace('/', ',').replace(';', ',')
+        seen_phones = []
+        for num in raw_phone.split(','):
+            n = num.strip()
+            if n and n.lower() not in ('nan', 'none', '') and n not in seen_phones:
+                seen_phones.append(n)
+        clean_phone = ', '.join(seen_phones)
+        
+        bucket = calc_bucket(days_overdue)
+        records.append(Party(
+            party_name=pname,
+            bill_no=str(row.get('bill_no', '')),
+            bill_date=bill_date,
+            due_date=due_date,
+            amount=amt,
+            paid_amount=paid,
+            pending_amount=pending,
+            days_overdue=days_overdue,
+            bucket=bucket,
+            bucket_pending=pending,
+            contact=clean_phone,
+            email=str(row.get('email', '')),
+            remarks=str(row.get('remarks', '')),
+            last_updated=datetime.utcnow(),
+            uploaded_by=user_id
+        ))
+    return records
+
+# ── Authentication Routes ───────────────────────────────────────────────
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    error = None
     if request.method == 'POST':
-        u = request.form.get('username', '')
-        p = hashlib.sha256(request.form.get('password', '').encode()).hexdigest()
-        if USERS.get(u) == p:
-            session['user'] = u
-            return redirect(url_for('dashboard'))
-        error = 'Invalid credentials'
-    return render_template('login.html', error=error)
+        username = request.form.get('username')
+        password = request.form.get('password')
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password_hash, password):
+            session['user_id'] = user.id
+            session['username'] = user.username
+            flash(f'Welcome back, {username}!', 'success')
+            return redirect(url_for('index'))
+        flash('Invalid username or password', 'error')
+    return render_template('login.html')
 
 @app.route('/logout')
 def logout():
     session.clear()
+    flash('You have been logged out', 'success')
     return redirect(url_for('login'))
 
-@app.route('/')
+@app.route('/change-password', methods=['POST'])
 @login_required
-def dashboard():
-    parties = load_data()
-    summary = get_summary(parties)
-    gsheet_config = load_gsheet_config()
-    return render_template('dashboard.html', 
-                         summary=summary, 
-                         buckets=BUCKETS, 
-                         user=session['user'],
-                         gsheet_connected=gsheet_config is not None,
-                         last_sync_time=gsheet_config.get('sync_time') if gsheet_config else None)
-
-@app.route('/bucket/<bucket_key>')
-@login_required
-def bucket_view(bucket_key):
-    parties = load_data()
-    label = next((b['label'] for b in BUCKETS if b['key'] == bucket_key), bucket_key)
-    bucket_parties = []
-    for p in parties:
-        if bucket_key in p['buckets']:
-            bucket_parties.append({**p, 'bucket_amount': p['buckets'][bucket_key]})
-    bucket_parties.sort(key=lambda x: x['bucket_amount'], reverse=True)
-    bucket_total = sum(p['bucket_amount'] for p in bucket_parties)
-    return render_template('bucket.html', parties=bucket_parties, bucket_key=bucket_key,
-                           bucket_label=label, bucket_total=bucket_total,
-                           buckets=BUCKETS, user=session['user'],
-                           parties_json=json.dumps(bucket_parties))
-
-# Add this to app.py after the existing routes
-
-@app.route('/api/delete-party/<path:party_name>', methods=['DELETE'])
-@login_required
-def delete_party(party_name):
-    """Delete a specific party by name"""
-    parties = load_data()
+def change_password():
+    current = request.form.get('current_password')
+    new = request.form.get('new_password')
+    confirm = request.form.get('confirm_password')
     
-    # Find and remove the party
-    party_to_delete = None
-    for i, p in enumerate(parties):
-        if p['name'] == party_name:
-            party_to_delete = parties.pop(i)
-            break
-    
-    if party_to_delete:
-        save_data(parties)
-        
-        # Also clear Google Sheet config if it exists (data is now different)
-        # This prevents auto-sync from re-adding the deleted party
-        if os.path.exists(GSHEET_CONFIG_FILE):
-            config = load_gsheet_config()
-            if config:
-                # Update hash to reflect deletion
-                new_hash = get_data_hash(parties)
-                config['data_hash'] = new_hash
-                save_gsheet_config(config['url'], config['sync_time'], new_hash)
-        
-        return jsonify({
-            'success': True,
-            'message': f'Successfully deleted {party_name}',
-            'party': party_to_delete
-        })
+    user = User.query.get(session['user_id'])
+    if not check_password_hash(user.password_hash, current):
+        flash('Current password is incorrect', 'error')
+    elif new != confirm:
+        flash('New passwords do not match', 'error')
+    elif len(new) < 4:
+        flash('Password must be at least 4 characters', 'error')
     else:
-        return jsonify({
-            'success': False,
-            'error': f'Party "{party_name}" not found'
-        }), 404
+        user.password_hash = generate_password_hash(new)
+        db.session.commit()
+        flash('Password changed successfully!', 'success')
+    return redirect(url_for('index'))
 
-
-@app.route('/api/delete-parties-bulk', methods=['POST'])
+# ── WhatsApp Routes ─────────────────────────────────────────────────────
+"""@app.route('/send-whatsapp/<int:party_id>', methods=['POST'])
 @login_required
-def delete_parties_bulk():
-    """Delete multiple parties by their names"""
-    data = request.get_json()
-    party_names = data.get('party_names', [])
+def send_whatsapp_single(party_id):
     
-    if not party_names:
-        return jsonify({'error': 'No parties selected for deletion'}), 400
+    party = Party.query.get_or_404(party_id)
     
-    parties = load_data()
-    deleted = []
-    not_found = []
+    # Get primary phone number
+    phone = party.contact.split(',')[0].strip() if party.contact else None
     
-    for party_name in party_names:
-        found = False
-        for i, p in enumerate(parties):
-            if p['name'] == party_name:
-                deleted.append(parties.pop(i))
-                found = True
-                break
-        if not found:
-            not_found.append(party_name)
+    if not phone:
+        flash(f'❌ No phone number found for {party.party_name}', 'error')
+        return redirect(url_for('party_detail', pid=party_id))
     
-    if deleted:
-        save_data(parties)
-        
-        # Update Google Sheet hash to prevent auto-sync from re-adding
-        if os.path.exists(GSHEET_CONFIG_FILE):
-            config = load_gsheet_config()
-            if config:
-                new_hash = get_data_hash(parties)
-                config['data_hash'] = new_hash
-                save_gsheet_config(config['url'], config['sync_time'], new_hash)
-        
-        return jsonify({
-            'success': True,
-            'message': f'Successfully deleted {len(deleted)} parties',
-            'deleted_count': len(deleted),
-            'deleted_parties': [p['name'] for p in deleted],
-            'not_found': not_found
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'error': 'No parties were deleted'
-        }), 400
-
-
-@app.route('/api/bulk-action', methods=['POST'])
-@login_required
-def bulk_action():
-    """Handle bulk actions (delete, etc.) on multiple parties"""
-    data = request.get_json()
-    action = data.get('action')
-    party_names = data.get('party_names', [])
+    # Get bucket amount (use bucket_pending if available, otherwise pending_amount)
+    bucket_amount = party.bucket_pending if party.bucket_pending > 0 else party.pending_amount
     
-    if not party_names:
-        return jsonify({'error': 'No parties selected'}), 400
+    result = send_whatsapp_message(
+        party.id,
+        party.party_name,
+        phone,
+        party.pending_amount,
+        party.bucket,
+        bucket_amount
+    )
     
-    if action == 'delete':
-        return delete_parties_bulk()
-    else:
-        return jsonify({'error': f'Unknown action: {action}'}), 400
-
-@app.route('/party/<path:party_name>')
-@login_required
-def party_detail(party_name):
-    parties = load_data()
-    party = next((p for p in parties if p['name'] == party_name), None)
-    if not party:
-        return redirect(url_for('dashboard'))
-    bucket_map = {b['key']: b['label'] for b in BUCKETS}
-    return render_template('party_detail.html', party=party, bucket_map=bucket_map,
-                           buckets=BUCKETS, user=session['user'])
-
-@app.route('/api/summary')
-@login_required
-def api_summary():
-    parties = load_data()
-    return jsonify(get_summary(parties))
-
-@app.route('/api/refresh-data', methods=['GET', 'POST'])
-@login_required
-def refresh_data():
-    """API endpoint to refresh data from Google Sheets"""
-    config = load_gsheet_config()
-    
-    if not config or not config.get('url'):
-        return jsonify({
-            'success': False, 
-            'error': 'No Google Sheet connected. Please connect a sheet first.'
-        }), 400
-    
-    try:
-        # Re-sync from the saved URL
-        result = sync_from_url(config['url'])
-        
-        if result['success']:
-            return jsonify({
-                'success': True,
-                'message': f'Data refreshed successfully! Loaded {result["parties_count"]} parties.',
-                'summary': result['summary'],
-                'has_changes': result.get('has_changes', True)
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': result.get('error', 'Failed to refresh data')
-            }), 400
-            
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-"""def sync_from_url(sheet_url):
-    global last_gsheet_url, last_sync_time, last_sync_hash
-    
-    # Extract sheet ID from URL
-    sheet_id = None
-    patterns = [
-        r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
-        r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
-        r'spreadsheets/d/([a-zA-Z0-9-_]+)'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, sheet_url)
-        if match:
-            sheet_id = match.group(1)
-            break
-    
-    if not sheet_id:
-        return {'success': False, 'error': 'Could not extract sheet ID from URL'}
-    
-    try:
-        # Download and parse the sheet
-        export_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx'
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream'
-        }
-        
-        response = requests.get(export_url, headers=headers, allow_redirects=True, timeout=30)
-        
-        content_type = response.headers.get('Content-Type', '')
-        if 'text/html' in content_type or '<html' in response.text[:200].lower():
-            return {
-                'success': False,
-                'error': 'Google Sheets access denied. Please ensure the sheet is shared with "Anyone with the link can view".'
-            }
-        
-        if response.status_code != 200:
-            return {
-                'success': False,
-                'error': f'Failed to download sheet (HTTP {response.status_code})'
-            }
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(response.content)
-            tmp_path = tmp.name
-        
-        try:
-            parties = parse_excel(tmp_path)
-            
-            if not parties:
-                return {
-                    'success': False,
-                    'error': 'No valid party data found in the sheet'
-                }
-            
-            # Check if data has changed
-            current_hash = get_data_hash(parties)
-            old_parties = load_data()
-            old_hash = get_data_hash(old_parties)
-            
-            has_changes = (current_hash != old_hash)
-            
-            save_data(parties)
-            
-            # Store sync info
-            last_gsheet_url = sheet_url
-            last_sync_time = datetime.now().isoformat()
-            last_sync_hash = current_hash
-            
-            # Save config
-            save_gsheet_config(sheet_url, last_sync_time, current_hash)
-            
-            summary = get_summary(parties)
-            
-            return {
-                'success': True,
-                'parties_count': len(parties),
-                'summary': summary,
-                'has_changes': has_changes,
-                'sync_time': last_sync_time
-            }
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-                
-    except Exception as e:
-        return {'success': False, 'error': str(e)}"""
-
-def sync_from_url(sheet_url):
-    """Sync data from a Google Sheet URL with better error handling"""
-    global last_gsheet_url, last_sync_time, last_sync_hash
-    
-    # Extract sheet ID from URL
-    sheet_id = None
-    patterns = [
-        r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
-        r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
-        r'spreadsheets/d/([a-zA-Z0-9-_]+)'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, sheet_url)
-        if match:
-            sheet_id = match.group(1)
-            break
-    
-    if not sheet_id:
-        return {'success': False, 'error': 'Could not extract sheet ID from URL. Make sure it\'s a valid Google Sheets URL.'}
-    
-    try:
-        # Use the correct export format
-        export_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx'
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*'
-        }
-        
-        response = requests.get(export_url, headers=headers, allow_redirects=True, timeout=30)
-        
-        # Check if we got HTML instead of Excel (indicates auth/permission issue)
-        content_type = response.headers.get('Content-Type', '').lower()
-        is_html = 'text/html' in content_type or response.text.strip().startswith('<!DOCTYPE') or response.text.strip().startswith('<html')
-        
-        if is_html:
-            # Check for common Google error messages in the HTML
-            response_text_lower = response.text[:2000].lower()
-            if 'login' in response_text_lower or 'signin' in response_text_lower:
-                return {
-                    'success': False,
-                    'error': '⚠️ Google Sheets access denied. Please ensure the sheet is shared with "Anyone with the link can view" (not just "Anyone in your organization").'
-                }
-            elif 'not found' in response_text_lower:
-                return {
-                    'success': False,
-                    'error': '❌ Sheet not found. Please check if the URL is correct and the sheet exists.'
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': '🔒 Cannot access sheet. Please make sure:\n1. Sheet is shared with "Anyone with the link can view"\n2. Link is copied correctly\n3. Sheet is not private or restricted'
-                }
-        
-        if response.status_code != 200:
-            return {
-                'success': False,
-                'error': f'Failed to download sheet (HTTP {response.status_code}). Please check the sheet permissions.'
-            }
-        
-        # Check if we actually got an Excel file (magic number check)
-        if len(response.content) < 100:
-            return {
-                'success': False,
-                'error': 'Downloaded file is too small. The sheet might be empty or inaccessible.'
-            }
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(response.content)
-            tmp_path = tmp.name
-        
-        try:
-            parties = parse_excel(tmp_path)
-            
-            if not parties:
-                return {
-                    'success': False,
-                    'error': 'No valid party data found in the sheet. Please check the format.'
-                }
-            
-            # Check if data has changed
-            current_hash = get_data_hash(parties)
-            old_parties = load_data()
-            old_hash = get_data_hash(old_parties)
-            
-            has_changes = (current_hash != old_hash)
-            
-            save_data(parties)
-            
-            # Store sync info
-            last_gsheet_url = sheet_url
-            last_sync_time = datetime.now().isoformat()
-            last_sync_hash = current_hash
-            
-            # Save config
-            save_gsheet_config(sheet_url, last_sync_time, current_hash)
-            
-            summary = get_summary(parties)
-            
-            return {
-                'success': True,
-                'parties_count': len(parties),
-                'summary': summary,
-                'has_changes': has_changes,
-                'sync_time': last_sync_time
-            }
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-                
-    except requests.exceptions.Timeout:
-        return {'success': False, 'error': 'Connection timeout. Please check your internet connection.'}
-    except requests.exceptions.ConnectionError:
-        return {'success': False, 'error': 'Cannot connect to Google Sheets. Please check your network.'}
-    except Exception as e:
-        return {'success': False, 'error': f'Error: {str(e)}'}
-
-@app.route('/api/google-sheet', methods=['POST'])
-@login_required
-def sync_google_sheet():
-    """Sync from Google Sheets and save configuration"""
-    data = request.get_json()
-    sheet_url = data.get('url', '').strip()
-    
-    if not sheet_url:
-        return jsonify({'error': 'No URL provided'}), 400
-    
-    result = sync_from_url(sheet_url)
+    # Log the attempt
+    log = WhatsAppLog(
+        party_id=party.id,
+        party_name=party.party_name,
+        phone_number=phone,
+        message=f"Reminder: Pending {party.pending_amount}",
+        status='success' if result['success'] else 'failed',
+        response=json.dumps(result),
+        is_bulk=False
+    )
+    db.session.add(log)
+    db.session.commit()
     
     if result['success']:
-        return jsonify({
-            'success': True,
-            'message': f'Successfully connected and synced {result["parties_count"]} parties from Google Sheets',
-            'summary': result['summary'],
-            'sync_time': result.get('sync_time'),
-            'has_changes': result.get('has_changes', True)
-        })
+        flash(f'✅ WhatsApp reminder sent to {party.party_name}!', 'success')
     else:
-        return jsonify({'error': result['error']}), 400
+        flash(f'❌ Failed to send message to {party.party_name}: {result.get("error", "Unknown error")}', 'error')
+    
+    return redirect(url_for('party_detail', pid=party_id))"""
 
-@app.route('/api/check-connection', methods=['GET'])
+@app.route('/send-whatsapp/<int:party_id>', methods=['POST'])
 @login_required
-def check_connection():
-    """Check if Google Sheet is connected and get last sync info"""
-    config = load_gsheet_config()
+def send_whatsapp_single(party_id):
+    """Send single WhatsApp message to a specific party"""
+    party = Party.query.get_or_404(party_id)
     
-    if config:
-        return jsonify({
-            'connected': True,
-            'last_sync_time': config.get('sync_time'),
-            'url': config.get('url')
-        })
-    else:
-        return jsonify({'connected': False})
-
-@app.route('/api/auto-refresh', methods=['POST'])
-@login_required
-def auto_refresh():
-    """Auto-refresh data from last used Google Sheet"""
-    config = load_gsheet_config()
+    # Get phone number from form (if selected from dropdown) or use first contact
+    phone = request.form.get('phone_number')
+    if not phone:
+        # Fallback to first contact number
+        phone = party.contact.split(',')[0].strip() if party.contact else None
     
-    if not config or not config.get('url'):
-        return jsonify({'success': False, 'error': 'No Google Sheet configured'}), 400
+    if not phone:
+        flash(f'❌ No phone number found for {party.party_name}', 'error')
+        return redirect(url_for('party_detail', pid=party_id))
     
-    result = sync_from_url(config['url'])
+    # Get bucket amount (use bucket_pending if available, otherwise pending_amount)
+    bucket_amount = party.bucket_pending if party.bucket_pending > 0 else party.pending_amount
+    
+    result = send_whatsapp_message(
+        party.id,
+        party.party_name,
+        phone,
+        party.pending_amount,
+        party.bucket,
+        bucket_amount
+    )
+    
+    # Log the attempt
+    log = WhatsAppLog(
+        party_id=party.id,
+        party_name=party.party_name,
+        phone_number=phone,
+        message=f"Reminder: Pending {party.pending_amount}",
+        status='success' if result['success'] else 'failed',
+        response=json.dumps(result),
+        is_bulk=False
+    )
+    db.session.add(log)
+    db.session.commit()
     
     if result['success']:
-        return jsonify({
-            'success': True,
-            'message': f'Auto-refreshed {result["parties_count"]} parties',
-            'summary': result['summary'],
-            'has_changes': result.get('has_changes', False)
-        })
+        flash(f'✅ WhatsApp reminder sent to {party.party_name} at {phone}!', 'success')
     else:
-        return jsonify({'success': False, 'error': result.get('error', 'Auto-refresh failed')}), 500
-
-@app.route('/api/check-updates', methods=['POST'])
-@login_required
-def check_updates():
-    """Check if Google Sheet has been updated"""
-    config = load_gsheet_config()
-    sheet_url = None
+        flash(f'❌ Failed to send message to {party.party_name}: {result.get("error", "Unknown error")}', 'error')
     
-    if request.is_json:
-        data = request.get_json()
-        sheet_url = data.get('url', '')
-    
-    if not sheet_url and config:
-        sheet_url = config.get('url')
-    
-    if not sheet_url:
-        return jsonify({'has_updates': False, 'error': 'No sheet URL configured'}), 400
-    
-    # Extract sheet ID
-    sheet_id = None
-    patterns = [
-        r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
-        r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, sheet_url)
-        if match:
-            sheet_id = match.group(1)
-            break
-    
-    if not sheet_id:
-        return jsonify({'has_updates': False, 'error': 'Invalid sheet URL'}), 400
-    
-    try:
-        export_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        response = requests.get(export_url, headers=headers, allow_redirects=True, timeout=15)
-        
-        if response.status_code != 200:
-            return jsonify({'has_updates': False, 'error': 'Cannot access sheet'}), 400
-        
-        # Quick check - just get first few rows for comparison
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(response.content)
-            tmp_path = tmp.name
-        
-        try:
-            # Read first 100 rows for quick comparison
-            df = pd.read_excel(tmp_path, nrows=100)
-            current_hash = hashlib.md5(df.to_string().encode()).hexdigest()
-            
-            last_hash = config.get('data_hash') if config else None
-            has_updates = (last_hash != current_hash) if last_hash else True
-            
-            return jsonify({
-                'has_updates': has_updates,
-                'last_sync_time': config.get('sync_time') if config else None,
-                'message': 'Updates available! Click refresh to sync.' if has_updates else 'Data is up to date'
-            })
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-                
-    except Exception as e:
-        return jsonify({'has_updates': False, 'error': str(e)}), 500
+    return redirect(url_for('party_detail', pid=party_id))
 
-@app.route('/api/search')
-@login_required
-def search():
-    q = request.args.get('q', '').lower().strip()
-    if not q:
-        return jsonify([])
-    
-    parties = load_data()
-    results = []
-    for p in parties:
-        if (q in p['name'].lower() or 
-            q in p.get('location', '').lower() or 
-            q in p.get('contact_person', '').lower() or
-            q in p.get('phone', '').lower()):
-            results.append(p)
-    
-    return jsonify(results[:20])
-
-@app.route('/api/send-reminder', methods=['POST'])
-@login_required
-def send_reminder():
-    data = request.get_json()
-    party_name = data.get('party_name')
-    
-    if not party_name:
-        return jsonify({'error': 'Party name required'}), 400
-    
-    parties = load_data()
-    party = next((p for p in parties if p['name'] == party_name), None)
-    
-    if not party:
-        return jsonify({'error': 'Party not found'}), 404
-    
-    # Here you would integrate actual email/WhatsApp API
-    # For now, just return success
-    return jsonify({
-        'success': True, 
-        'message': f'Reminder sent to {party_name}',
-        'party': party
-    })
-
-
-
-
-@app.route('/api/files', methods=['GET'])
-@login_required
-def get_files():
-    """Get list of uploaded files"""
-    files = get_saved_files()
-    return jsonify({'files': files})
-
-# Add this missing endpoint after the other routes (around line 380)
-
-@app.route('/api/upload', methods=['POST'])
-@login_required
-def upload_file():
-    """Handle Excel file upload"""
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'error': 'No file provided'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'error': 'No file selected'}), 400
-    
-    if not file.filename.lower().endswith(('.xlsx', '.xls')):
-        return jsonify({'success': False, 'error': 'Please upload an Excel file (.xlsx or .xls)'}), 400
-    
-    try:
-        # Save file permanently to UPLOAD_FOLDER
-        filename = secure_filename(file.filename)
-        saved_file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(saved_file_path)
-
-        try:
-            # Parse the saved Excel file
-            parties = parse_excel(saved_file_path)
-
-            if not parties:
-                # Remove saved file if parsing failed
-                try:
-                    os.unlink(saved_file_path)
-                except:
-                    pass
-                return jsonify({'success': False, 'error': 'No valid party data found in the file'}), 400
-
-            # Save to data file
-            save_data(parties)
-
-            # Clear Google Sheet config if exists (since manual upload overrides)
-            if os.path.exists(GSHEET_CONFIG_FILE):
-                os.remove(GSHEET_CONFIG_FILE)
-
-            summary = get_summary(parties)
-
-            return jsonify({
-                'success': True,
-                'message': f'Successfully uploaded {len(parties)} parties',
-                'summary': summary,
-                'filename': filename
-            })
-
-        except Exception as parse_err:
-            # Remove saved file if parsing failed
-            try:
-                os.unlink(saved_file_path)
-            except:
-                pass
-            raise parse_err
-
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'Error processing file: {str(e)}'}), 500
-
-@app.route('/api/delete-file', methods=['DELETE'])
-@login_required
-def delete_file():
-    """Delete an uploaded file"""
-    data = request.get_json()
-    filename = data.get('filename')
-    
-    if not filename:
-        return jsonify({'success': False, 'error': 'Filename required'}), 400
-    
-    # Security: prevent path traversal
-    filename = secure_filename(filename)
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-    
-    if not os.path.exists(file_path):
-        return jsonify({'success': False, 'error': 'File not found'}), 404
-    
-    try:
-        os.unlink(file_path)
-
-        # Also clear the party data (debtors.json) since the source file is deleted
-        if os.path.exists(DATA_FILE):
-            os.remove(DATA_FILE)
-
-        # Clear Google Sheet config if exists
-        if os.path.exists(GSHEET_CONFIG_FILE):
-            os.remove(GSHEET_CONFIG_FILE)
-
-        return jsonify({'success': True, 'message': f'Deleted {filename} and cleared all associated data'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/load-file', methods=['POST'])
-@login_required
-def load_file():
-    """Load data from a previously uploaded file"""
-    data = request.get_json()
-    filename = data.get('filename')
-    
-    if not filename:
-        return jsonify({'success': False, 'error': 'Filename required'}), 400
-    
-    filename = secure_filename(filename)
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-    
-    if not os.path.exists(file_path):
-        return jsonify({'success': False, 'error': 'File not found'}), 404
-    
-    try:
-        parties = parse_excel(file_path)
-        if not parties:
-            return jsonify({'success': False, 'error': 'No valid party data found in the file'}), 400
-        
-        save_data(parties)
-        
-        # Clear Google Sheet config
-        if os.path.exists(GSHEET_CONFIG_FILE):
-            os.remove(GSHEET_CONFIG_FILE)
-        
-        return jsonify({
-            'success': True,
-            'message': f'Loaded {len(parties)} parties from {filename}',
-            'parties_count': len(parties)
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/disconnect-sheet', methods=['POST'])
-@login_required
-def disconnect_sheet():
-    """Disconnect Google Sheet connection"""
-    if os.path.exists(GSHEET_CONFIG_FILE):
-        os.remove(GSHEET_CONFIG_FILE)
-        return jsonify({'success': True, 'message': 'Google Sheet disconnected'})
-    return jsonify({'success': True, 'message': 'No active connection'})
-
-@app.route('/api/bucket-parties/<bucket_key>')
-@login_required
-def api_bucket_parties(bucket_key):
-    """Return all parties in a bucket as JSON (used by frontend for WhatsApp)"""
-    parties = load_data()
-    result = []
-    for p in parties:
-        if bucket_key in p['buckets']:
-            result.append({
-                'name': p['name'],
-                'phone': p.get('phone', ''),
-                'location': p.get('location', ''),
-                'contact_person': p.get('contact_person', ''),
-                'bucket_amount': p['buckets'][bucket_key],
-                'total_pending': p['total_pending'],
-            })
-    result.sort(key=lambda x: x['bucket_amount'], reverse=True)
-    return jsonify(result)
-
-
-    
-@app.route('/api/send-whatsapp-bulk', methods=['POST'])
+@app.route('/send-whatsapp-bulk', methods=['POST'])
 @login_required
 def send_whatsapp_bulk():
-    """
-    Returns the list of parties with their WhatsApp URLs ready.
-    Actual opening is done client-side via wa.me links.
-    This endpoint validates phones and prepares the payload.
-    """
-    data = request.get_json()
-    bucket_key = data.get('bucket_key', '')
-    message_template = data.get('message', '')
-    selected_names = data.get('selected_names', [])
+    """Send bulk WhatsApp messages to selected parties"""
+    party_ids = request.form.getlist('party_ids')
+    
+    if not party_ids:
+        flash('❌ No parties selected', 'error')
+        return redirect(url_for('parties'))
+    
+    parties = Party.query.filter(Party.id.in_(party_ids)).all()
+    
+    # Filter parties with phone numbers
+    parties_with_phones = [p for p in parties if p.contact]
+    parties_without_phones = [p for p in parties if not p.contact]
+    
+    if not parties_with_phones:
+        flash('❌ None of the selected parties have phone numbers', 'error')
+        return redirect(url_for('parties'))
+    
+    # Generate bulk ID
+    bulk_id = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    
+    # Send messages
+    result = send_bulk_whatsapp_messages(parties_with_phones, bulk_id)
+    
+    # Show result message
+    message = f"📱 Bulk WhatsApp Summary:\n"
+    message += f"✅ Success: {result['success']} messages\n"
+    message += f"❌ Failed: {result['failed']} messages\n"
+    message += f"📊 Total selected: {len(parties)}\n"
+    
+    if parties_without_phones:
+        message += f"⚠️ {len(parties_without_phones)} parties skipped (no phone number)"
+    
+    flash(message, 'success' if result['success'] > 0 else 'error')
+    
+    return redirect(url_for('parties'))
 
-    if not message_template:
-        return jsonify({'error': 'Message template is required'}), 400
-    if not selected_names:
-        return jsonify({'error': 'No parties selected'}), 400
+@app.route('/whatsapp-logs')
+@login_required
+def whatsapp_logs():
+    """View WhatsApp message logs"""
+    page = request.args.get('page', 1, type=int)
+    logs = WhatsAppLog.query.order_by(WhatsAppLog.sent_at.desc()).paginate(page=page, per_page=50)
+    return render_template('whatsapp_logs.html', logs=logs)
 
-    parties = load_data()
-    results = []
-    skipped = []
+@app.route('/api/test-whatsapp', methods=['POST'])
+@login_required
+def test_whatsapp():
+    """Test WhatsApp API connection"""
+    test_number = request.form.get('test_number', '')
+    if not test_number:
+        return jsonify({'success': False, 'error': 'No test number provided'})
+    
+    result = send_whatsapp_message(
+        0,  # dummy party_id
+        'Test Customer',
+        test_number,
+        5000.00,
+        '30-60 DAYS',
+        2500.00
+    )
+    return jsonify(result)
 
+# ── Main Routes ───────────────────────────────────────────────────────────────
+@app.route('/')
+@login_required
+def index():
+    data = get_dashboard_data()
+    return render_template('dashboard.html', data=data, username=session.get('username'))
+
+@app.route('/upload', methods=['GET', 'POST'])
+@login_required
+def upload():
+    if request.method == 'POST':
+        f = request.files.get('excel_file')
+        if not f or f.filename == '':
+            flash('No file selected', 'error')
+            return redirect(url_for('upload'))
+        ext = f.filename.rsplit('.', 1)[-1].lower()
+        if ext not in ('xlsx', 'xls', 'csv'):
+            flash('Only .xlsx / .xls / .csv files allowed', 'error')
+            return redirect(url_for('upload'))
+        path = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
+        f.save(path)
+        try:
+            df_raw = pd.read_csv(path, header=None) if ext == 'csv' else pd.read_excel(path, header=None)
+            if request.form.get('replace') == '1':
+                Party.query.delete()
+            records = process_dataframe(df_raw, session['user_id'])
+            db.session.bulk_save_objects(records)
+            db.session.commit()
+            
+            # Delete the file after processing
+            os.remove(path)
+            
+            flash(f'✅ Imported {len(records)} records successfully!', 'success')
+        except Exception as e:
+            db.session.rollback()
+            flash(f'❌ Error: {str(e)}', 'error')
+            traceback.print_exc()
+        return redirect(url_for('index'))
+    return render_template('upload.html')
+
+@app.route('/parties')
+@login_required
+def parties():
+    bucket = request.args.get('bucket', '')
+    search = request.args.get('q', '')
+    overdue = request.args.get('overdue', '')
+    sort = request.args.get('sort', 'overdue_desc')
+    page = request.args.get('page', 1, type=int)
+    
+    q = Party.query
+    
+    if bucket:
+        q = q.filter_by(bucket=bucket)
+    
+    if search:
+        q = q.filter(Party.party_name.ilike(f'%{search}%'))
+    
+    if overdue:
+        if overdue == '0':
+            q = q.filter(Party.days_overdue == 0)
+        elif overdue == '30':
+            q = q.filter(Party.days_overdue.between(1, 30))
+        elif overdue == '60':
+            q = q.filter(Party.days_overdue.between(31, 60))
+        elif overdue == '90':
+            q = q.filter(Party.days_overdue.between(61, 90))
+        elif overdue == '120':
+            q = q.filter(Party.days_overdue.between(91, 120))
+        elif overdue == '180':
+            q = q.filter(Party.days_overdue > 120)
+    
+    # Apply sorting
+    if sort == 'overdue_desc':
+        q = q.order_by(Party.days_overdue.desc())
+    elif sort == 'overdue_asc':
+        q = q.order_by(Party.days_overdue.asc())
+    elif sort == 'amount_desc':
+        q = q.order_by(Party.pending_amount.desc())
+    elif sort == 'amount_asc':
+        q = q.order_by(Party.pending_amount.asc())
+    elif sort == 'name_asc':
+        q = q.order_by(Party.party_name.asc())
+    elif sort == 'name_desc':
+        q = q.order_by(Party.party_name.desc())
+    else:
+        q = q.order_by(Party.days_overdue.desc())
+    
+    pagination = q.paginate(page=page, per_page=25)
+    return render_template('parties.html', pagination=pagination, bucket=bucket, search=search, 
+                         overdue_filter=overdue, sort=sort, bucket_order=BUCKET_ORDER)
+
+@app.route('/party/<int:pid>')
+@login_required
+def party_detail(pid):
+    p = Party.query.get_or_404(pid)
+    # Get WhatsApp logs for this party
+    logs = WhatsAppLog.query.filter_by(party_id=pid).order_by(WhatsAppLog.sent_at.desc()).limit(10).all()
+    return render_template('party_detail.html', party=p, logs=logs)
+
+@app.route('/party/<int:pid>/edit', methods=['POST'])
+@login_required
+def party_edit(pid):
+    p = Party.query.get_or_404(pid)
+    p.remarks = request.form.get('remarks', p.remarks)
+    p.contact = request.form.get('contact', p.contact)
+    p.email = request.form.get('email', p.email)
+    db.session.commit()
+    flash('Record updated', 'success')
+    return redirect(url_for('party_detail', pid=pid))
+
+@app.route('/party/<int:pid>/delete', methods=['POST'])
+@login_required
+def party_delete(pid):
+    p = Party.query.get_or_404(pid)
+    party_name = p.party_name
+    db.session.delete(p)
+    db.session.commit()
+    flash(f'✅ Deleted record for {party_name}', 'success')
+    return redirect(url_for('parties'))
+
+@app.route('/party/add', methods=['GET', 'POST'])
+@login_required
+def party_add():
+    if request.method == 'POST':
+        try:
+            # Calculate days overdue
+            due_date = parse_date_safe(request.form.get('due_date'))
+            days_overdue = (date.today() - due_date).days if due_date else 0
+            pending = safe_float(request.form.get('pending_amount'))
+            bucket = calc_bucket(days_overdue)
+            
+            party = Party(
+                party_name=request.form.get('party_name'),
+                bill_no=request.form.get('bill_no'),
+                bill_date=parse_date_safe(request.form.get('bill_date')),
+                due_date=due_date,
+                amount=safe_float(request.form.get('amount')),
+                paid_amount=safe_float(request.form.get('paid_amount')),
+                pending_amount=pending,
+                days_overdue=days_overdue,
+                bucket=bucket,
+                bucket_pending=pending,
+                contact=request.form.get('contact'),
+                email=request.form.get('email'),
+                remarks=request.form.get('remarks'),
+                uploaded_by=session['user_id']
+            )
+            db.session.add(party)
+            db.session.commit()
+            flash(f'✅ Added new party: {party.party_name}', 'success')
+            return redirect(url_for('parties'))
+        except Exception as e:
+            flash(f'❌ Error adding party: {str(e)}', 'error')
+    return render_template('party_add.html')
+
+@app.route('/api/chart-data')
+@login_required
+def api_chart_data():
+    parties = Party.query.all()
+    buckets = {b: {'amount': 0, 'count': 0} for b in BUCKET_ORDER}
     for p in parties:
-        if p['name'] not in selected_names:
-            continue
-        phone_raw = p.get('phone', '').strip()
-        if not phone_raw:
-            skipped.append({'name': p['name'], 'reason': 'No phone number'})
-            continue
-
-        # Normalize phone: strip symbols, ensure 91 prefix for India
-        phone = phone_raw.replace(' ', '').replace('-', '').replace('.', '').replace('(', '').replace(')', '')
-        phone = phone.lstrip('+')
-        if phone.startswith('91') and len(phone) == 12:
-            phone = phone[2:]  # strip country code before re-adding
-        phone = '91' + phone
-
-        bucket_amount = p['buckets'].get(bucket_key, 0)
-        msg = (message_template
-               .replace('{name}', p['name'])
-               .replace('{bucket_amount}', f"₹{bucket_amount:,.2f}")
-               .replace('{total_pending}', f"₹{p['total_pending']:,.2f}"))
-
-        results.append({
-            'name': p['name'],
-            'phone': phone,
-            'whatsapp_url': f"https://wa.me/{phone}?text={requests.utils.quote(msg)}",
-            'message': msg
-        })
-
+        b = p.bucket or '> 180 DAYS'
+        if b in buckets:
+            buckets[b]['amount'] += p.pending_amount
+            buckets[b]['count'] += 1
     return jsonify({
-        'success': True,
-        'sent': len(results),
-        'skipped': len(skipped),
-        'skipped_parties': skipped,
-        'parties': results
+        'labels': BUCKET_ORDER,
+        'amounts': [round(buckets[b]['amount']) for b in BUCKET_ORDER],
+        'counts': [buckets[b]['count'] for b in BUCKET_ORDER],
     })
 
+@app.route('/api/clear-data', methods=['POST'])
+@login_required
+def api_clear_data():
+    try:
+        Party.query.delete()
+        db.session.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.template_filter('inr')
+def inr_filter(val):
+    try:
+        val = float(val)
+        if val >= 1e7:
+            return f'₹{val/1e7:.2f} Cr'
+        if val >= 1e5:
+            return f'₹{val/1e5:.2f} L'
+        return f'₹{val:,.2f}'
+    except:
+        return '₹0'
 
 if __name__ == '__main__':
-    # Create data directory if it doesn't exist
-    os.makedirs(DATA_DIR, exist_ok=True)
-    
-    # Load saved Google Sheet configuration
-    saved_config = load_gsheet_config()
-    if saved_config:
-        print(f'✓ Found saved Google Sheet configuration from {saved_config.get("sync_time", "unknown time")}')
-        # Optionally auto-sync on startup
-        # result = sync_from_url(saved_config['url'])
-        # if result['success']:
-        #     print(f'✓ Auto-synced {result["parties_count"]} parties on startup')
-    
-    # Load sample data if available and no data exists
-    if not os.path.exists(DATA_FILE):
-        try:
-            sample_paths = [
-                '/mnt/user-data/uploads/SUNDRY_DEBTOTS_09-05-2026__2_.xlsx',
-                os.path.join(os.path.dirname(__file__), 'sample_data.xlsx')
-            ]
-            
-            for sample in sample_paths:
-                if os.path.exists(sample):
-                    parties = parse_excel(sample)
-                    if parties:
-                        save_data(parties)
-                        print(f'✓ Pre-loaded {len(parties)} parties from {sample}')
-                        break
-        except Exception as e:
-            print(f'Note: Could not pre-load sample data: {e}')
-    
-    print(f'✓ Server running on http://localhost:5050')
-    app.run(debug=True, port=5050, host='0.0.0.0')
+    app.run(debug=True, port=5000)

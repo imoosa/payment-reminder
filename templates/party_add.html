@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Add New Party – WGS{% endblock %}
+{% block page_title %}➕ Add New Party{% endblock %}
+
+{% block content %}
+<div style="max-width: 800px; margin: 0 auto;">
+  <div class="card">
+    <form method="post">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div class="form-group">
+          <label class="form-label">Party Name *</label>
+          <input type="text" name="party_name" class="form-input" required placeholder="Enter party name">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Bill / Invoice No</label>
+          <input type="text" name="bill_no" class="form-input" placeholder="INV-001">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Bill Date</label>
+          <input type="date" name="bill_date" class="form-input">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Due Date</label>
+          <input type="date" name="due_date" class="form-input">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Total Amount</label>
+          <input type="number" name="amount" step="0.01" class="form-input" placeholder="0.00">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Paid Amount</label>
+          <input type="number" name="paid_amount" step="0.01" class="form-input" placeholder="0.00">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Pending Amount</label>
+          <input type="number" name="pending_amount" step="0.01" class="form-input" placeholder="0.00">
+          <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+            Leave empty to auto-calculate (Amount - Paid)
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Contact Number</label>
+          <input type="text" name="contact" class="form-input" placeholder="Phone / Mobile">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <input type="email" name="email" class="form-input" placeholder="email@example.com">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Remarks / Notes</label>
+        <textarea name="remarks" class="form-input form-textarea" placeholder="Additional notes, payment terms, etc."></textarea>
+      </div>
+
+      <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px;">
+        <a href="{{ url_for('parties') }}" class="btn btn-outline">Cancel</a>
+        <button type="submit" class="btn btn-primary">💾 Save Party</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

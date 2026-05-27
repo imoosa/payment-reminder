@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Upload Excel – WGS{% endblock %}
+{% block page_title %}📁 Upload Excel / CSV{% endblock %}
+
+{% block content %}
+<div style="max-width:700px;">
+<div class="card" style="margin-bottom:20px;">
+  <div style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;margin-bottom:6px;">Import from Excel / CSV</div>
+  <div style="color:var(--muted);font-size:13px;margin-bottom:24px;">Upload your ERP export and it will be automatically parsed. Supported formats: .xlsx, .xls, .csv</div>
+
+  <form method="post" enctype="multipart/form-data" id="upload-form">
+    <div class="form-group">
+      <label class="form-label">Select File</label>
+      <div id="drop-zone" style="border:2px dashed var(--border);border-radius:12px;padding:40px;text-align:center;cursor:pointer;transition:.2s;" 
+           onclick="document.getElementById('file-input').click()">
+        <div style="font-size:36px;margin-bottom:10px;">📊</div>
+        <div style="font-weight:600;margin-bottom:4px;">Drop your file here or click to browse</div>
+        <div style="font-size:12px;color:var(--muted);">.xlsx, .xls, .csv up to 16MB</div>
+        <div id="file-name" style="margin-top:12px;font-size:13px;color:#a78bfa;display:none;"></div>
+      </div>
+      <input type="file" id="file-input" name="excel_file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="showFileName(this)">
+    </div>
+
+    <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+      <input type="checkbox" id="replace" name="replace" value="1" checked style="width:16px;height:16px;accent-color:var(--accent);">
+      <label for="replace" style="font-size:14px;cursor:pointer;">
+        Replace existing data (uncheck to append / merge)
+      </label>
+    </div>
+
+    <button type="submit" class="btn btn-primary" id="submit-btn">
+      📤 Upload & Import
+    </button>
+  </form>
+</div>
+
+<!-- Column Mapping Guide -->
+<div class="card">
+  <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;margin-bottom:16px;">📋 Column Mapping Guide</div>
+  <div style="font-size:13px;color:var(--muted);margin-bottom:16px;">The system auto-detects columns. Use any of these names in your Excel header row:</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+    {% set mappings = [
+      ('Party Name', 'party, customer, vendor, name, client'),
+      ('Bill No', 'bill no, invoice no, voucher'),
+      ('Bill Date', 'bill date, invoice date'),
+      ('Due Date', 'due date, payment due'),
+      ('Amount', 'amount, total, gross, bill amount'),
+      ('Paid Amount', 'paid, received, payment received'),
+      ('Pending Amount', 'pending, balance, outstanding'),
+      ('Contact', 'contact, mobile, phone'),
+      ('Email', 'email'),
+      ('Remarks', 'remark, note, comment'),
+    ] %}
+    {% for field, aliases in mappings %}
+    <div style="padding:10px 12px;background:var(--surface2);border-radius:8px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">{{ field }}</div>
+      <div style="font-size:11px;color:var(--muted);">{{ aliases }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <div style="margin-top:16px;padding:12px;background:rgba(108,99,255,.08);border:1px solid rgba(108,99,255,.2);border-radius:10px;font-size:12px;color:var(--muted);">
+    💡 <strong style="color:#a78bfa;">Tip:</strong> The only required column is <strong>Party Name</strong>. All others are optional and will be left blank if missing.
+  </div>
+</div>
+
+<!-- Danger Zone -->
+<div class="card" style="border-color:rgba(248,113,113,.3);">
+  <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;color:#f87171;margin-bottom:16px;">⚠️ Danger Zone</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.15);border-radius:10px;">
+    <div>
+      <div style="font-weight:600;font-size:14px;">Clear All Imported Data</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;">Permanently deletes all party records from the database</div>
+    </div>
+    <button class="btn btn-danger" onclick="clearData()">🗑️ Clear All Data</button>
+  </div>
+</div>
+</div>
+
+<script>
+async function clearData() {
+  if (!confirm('⚠️ This will permanently delete ALL party records. This cannot be undone. Are you sure?')) return;
+  const res = await fetch('/api/clear-data', { method: 'POST' });
+  const d = await res.json();
+  if (d.success) { alert('✅ All data cleared.'); location.href = '/'; }
+  else alert('❌ ' + d.error);
+}
+
+function showFileName(input) {
+  const fn = document.getElementById('file-name');
+  if (input.files.length > 0) {
+    fn.textContent = '✅ ' + input.files[0].name;
+    fn.style.display = 'block';
+    document.getElementById('drop-zone').style.borderColor = 'var(--accent)';
+  }
+}
+
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; });
+dz.addEventListener('dragleave', () => dz.style.borderColor = 'var(--border)');
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  const fi = document.getElementById('file-input');
+  fi.files = e.dataTransfer.files;
+  showFileName(fi);
+});
+
+document.getElementById('upload-form').addEventListener('submit', () => {
+  const btn = document.getElementById('submit-btn');
+  btn.textContent = '⏳ Importing…';
+  btn.disabled = true;
+});
+</script>
+{% endblock %}

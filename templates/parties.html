@@ -1,0 +1,471 @@
+{% extends "base.html" %}
+{% block title %}Parties – WGS Payment{% endblock %}
+{% block page_title %}👥 Parties{% endblock %}
+
+{% block topbar_right %}
+<form method="get" style="display:flex;gap:8px;align-items:center;" id="search-form">
+  <div style="position: relative;">
+    <input class="form-input" style="width:260px;padding:7px 12px;" name="q" value="{{ search }}" placeholder="Search by party name, bill no, or contact...">
+    {% if search %}
+    <a href="{{ url_for('parties', bucket=bucket) }}" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--muted);text-decoration:none;font-size:14px;" title="Clear search">✕</a>
+    {% endif %}
+  </div>
+  <button type="submit" class="btn btn-outline" style="padding:7px 14px;">🔍 Search</button>
+</form>
+{% endblock %}
+
+{% block content %}
+<!-- Bulk Action Bar -->
+<div id="bulk-actions" style="display:none; margin-bottom:20px; padding:12px 16px; background:linear-gradient(135deg, rgba(108,99,255,0.1), rgba(108,99,255,0.05)); border:1px solid rgba(108,99,255,0.3); border-radius:var(--radius);">
+  <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+    <div>
+      <span id="selected-count" style="font-weight:700; color:var(--accent);">0</span> parties selected
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button onclick="selectAll()" class="btn btn-outline" style="padding:6px 14px; font-size:13px;">✓ Select All</button>
+      <button onclick="deselectAll()" class="btn btn-outline" style="padding:6px 14px; font-size:13px;">✗ Deselect All</button>
+      <button onclick="sendBulkWhatsApp()" class="btn btn-primary" style="padding:6px 16px;">
+        💬 Send WhatsApp to Selected
+      </button>
+      <button onclick="cancelBulk()" class="btn btn-outline" style="padding:6px 14px;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Filter Section -->
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;align-items:center;">
+  <!-- Aging Bucket Filter Dropdown -->
+  <div style="position:relative;">
+    <select id="bucket-filter" onchange="filterByBucket(this.value)" class="form-input" style="padding:8px 32px 8px 14px;cursor:pointer;appearance:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"6 9 12 15 18 9\"></polyline></svg>');background-repeat:no-repeat;background-position:right 10px center;background-size:14px;">
+      <option value="">📊 All Buckets</option>
+      {% for b in bucket_order %}
+      <option value="{{ b }}" {% if bucket == b %}selected{% endif %}>{{ b }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <!-- Filter by Days Overdue -->
+  <div style="position:relative;">
+    <select id="overdue-filter" onchange="filterByOverdue(this.value)" class="form-input" style="padding:8px 32px 8px 14px;cursor:pointer;appearance:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"6 9 12 15 18 9\"></polyline></svg>');background-repeat:no-repeat;background-position:right 10px center;background-size:14px;">
+      <option value="">⏰ All Overdue</option>
+      <option value="0">✅ Current (0 days)</option>
+      <option value="30">⚠️ 1-30 Days</option>
+      <option value="60">🔶 31-60 Days</option>
+      <option value="90">🔴 61-90 Days</option>
+      <option value="120">🔥 91-120 Days</option>
+      <option value="180">💀 120+ Days</option>
+    </select>
+  </div>
+
+  <!-- Sort Options -->
+  <div style="position:relative;">
+    <select id="sort-filter" onchange="filterBySort(this.value)" class="form-input" style="padding:8px 32px 8px 14px;cursor:pointer;appearance:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"6 9 12 15 18 9\"></polyline></svg>');background-repeat:no-repeat;background-position:right 10px center;background-size:14px;">
+      <option value="overdue_desc" {% if sort == 'overdue_desc' %}selected{% endif %}>📅 Overdue: High to Low</option>
+      <option value="overdue_asc" {% if sort == 'overdue_asc' %}selected{% endif %}>📅 Overdue: Low to High</option>
+      <option value="amount_desc" {% if sort == 'amount_desc' %}selected{% endif %}>💰 Amount: High to Low</option>
+      <option value="amount_asc" {% if sort == 'amount_asc' %}selected{% endif %}>💰 Amount: Low to High</option>
+      <option value="name_asc" {% if sort == 'name_asc' %}selected{% endif %}>🔤 Name: A to Z</option>
+      <option value="name_desc" {% if sort == 'name_desc' %}selected{% endif %}>🔤 Name: Z to A</option>
+    </select>
+  </div>
+
+  <!-- Reset Filters Button -->
+  {% if bucket or search or overdue_filter or sort %}
+  <a href="{{ url_for('parties') }}" class="btn btn-outline" style="padding:8px 16px;font-size:13px;">
+    🔄 Reset All Filters
+  </a>
+  {% endif %}
+</div>
+
+{% if bucket or search or overdue_filter or sort %}
+<div style="margin-bottom:16px;padding:10px 16px;background:rgba(108,99,255,.1);border:1px solid rgba(108,99,255,.2);border-radius:10px;font-size:13px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+  <span>🔍 Active Filters:</span>
+  {% if bucket %}
+  <span class="badge badge-blue">Bucket: {{ bucket }}</span>
+  {% endif %}
+  {% if search %}
+  <span class="badge badge-blue">Search: "{{ search }}"</span>
+  {% endif %}
+  {% if overdue_filter %}
+  <span class="badge badge-blue">Overdue: 
+    {% if overdue_filter == '0' %}Current
+    {% elif overdue_filter == '30' %}1-30 Days
+    {% elif overdue_filter == '60' %}31-60 Days
+    {% elif overdue_filter == '90' %}61-90 Days
+    {% elif overdue_filter == '120' %}91-120 Days
+    {% else %}120+ Days{% endif %}
+  </span>
+  {% endif %}
+  {% if sort %}
+  <span class="badge badge-blue">Sort: 
+    {% if sort == 'overdue_desc' %}Overdue (High-Low)
+    {% elif sort == 'overdue_asc' %}Overdue (Low-High)
+    {% elif sort == 'amount_desc' %}Amount (High-Low)
+    {% elif sort == 'amount_asc' %}Amount (Low-High)
+    {% elif sort == 'name_asc' %}Name (A-Z)
+    {% else %}Name (Z-A){% endif %}
+  </span>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card" style="padding:0;">
+  <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;">
+      {{ pagination.total }} records found
+      {% if search %} for "<em>{{ search }}</em>"{% endif %}
+    </div>
+    <div style="font-size:12px;color:var(--muted);">Page {{ pagination.page }} of {{ pagination.pages }}</div>
+  </div>
+  
+  <form id="bulk-form" method="post" action="{{ url_for('send_whatsapp_bulk') }}">
+    <div class="table-wrap" style="border:none;border-radius:0;">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:40px;">
+              <input type="checkbox" id="select-all-checkbox" onclick="toggleSelectAll()" style="width:18px;height:18px;cursor:pointer;">
+            </th>
+            <th>Party Name</th>
+            <th>Bill No</th>
+            <th>Phone</th>
+            <th>Total Pending</th>
+            <th>Overdue Days</th>
+            <th>Bucket</th>
+            <th>WhatsApp</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pagination.items %}
+          {% set phones = p.contact.split(',') | map('trim') | select | list if p.contact else [] %}
+          <tr>
+            <td style="text-align:center;">
+              {% if phones %}
+              <input type="checkbox" name="party_ids" value="{{ p.id }}" class="party-checkbox" 
+                     style="width:18px;height:18px;cursor:pointer;" 
+                     {% if not phones %}disabled{% endif %}>
+              {% else %}
+              <span style="color:var(--muted);font-size:11px;">⚠️</span>
+              {% endif %}
+            </td>
+            <td style="cursor:pointer;" onclick="window.location.href='{{ url_for('party_detail', pid=p.id) }}'">
+              <strong>{{ p.party_name }}</strong>
+              {% if p.bill_no %}<div style="font-size:11px;color:var(--muted);">{{ p.bill_no }}</div>{% endif %}
+            </td>
+            <td style="font-size:12px;color:var(--muted);cursor:pointer;" onclick="window.location.href='{{ url_for('party_detail', pid=p.id) }}'">
+              {{ p.bill_no or '—' }}
+            </td>
+            <td>
+              {% if phones | length == 0 %}
+                <span style="color:var(--muted);">—</span>
+              {% else %}
+                <div class="phone-dropdown-container" style="position:relative;display:inline-block;width:100%;">
+                  <div class="selected-phone-display" style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;min-width:140px;" onclick="togglePhoneDropdown(this.parentElement)">
+                    <span class="selected-phone-number">{{ phones[0] }}</span>
+                    {% if phones|length > 1 %}
+                    <span class="dropdown-arrow" style="font-size:12px;">▼</span>
+                    {% endif %}
+                  </div>
+                  {% if phones|length > 1 %}
+                  <div class="phone-dropdown-menu" style="display:none;position:absolute;top:100%;left:0;z-index:200;min-width:160px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-top:4px;box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+                    {% for num in phones %}
+                    <div class="phone-option" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);transition:background 0.2s;" 
+                         onclick="event.stopPropagation(); selectPhoneNumber('{{ num }}', this)">
+                      📞 {{ num }}
+                    </div>
+                    {% endfor %}
+                  </div>
+                  {% endif %}
+                </div>
+              {% endif %}
+            </td>
+            <td style="font-family:'Space Grotesk',sans-serif;font-weight:700;color:#f87171;cursor:pointer;" onclick="window.location.href='{{ url_for('party_detail', pid=p.id) }}'">
+              {{ p.pending_amount | inr }}
+            </td>
+            <td style="cursor:pointer;" onclick="window.location.href='{{ url_for('party_detail', pid=p.id) }}'">
+              {% if p.days_overdue > 0 %}
+                <span style="color:{% if p.days_overdue > 180 %}#f87171{% elif p.days_overdue > 120 %}#fb923c{% elif p.days_overdue > 60 %}#fbbf24{% else %}#2dd4bf{% endif %};font-weight:600;">
+                  {{ p.days_overdue }} days
+                </span>
+              {% else %}
+                <span style="color:#2dd4bf;">Current</span>
+              {% endif %}
+            </td>
+            <td style="cursor:pointer;" onclick="window.location.href='{{ url_for('party_detail', pid=p.id) }}'">
+              {% set bc = p.bucket or '—' %}
+              {% if '180' in bc %}<span class="badge badge-red">{{ bc }}</span>
+              {% elif '120' in bc %}<span class="badge badge-orange">{{ bc }}</span>
+              {% elif '90' in bc %}<span class="badge badge-yellow">{{ bc }}</span>
+              {% elif '60' in bc %}<span class="badge badge-blue">{{ bc }}</span>
+              {% elif '30' in bc %}<span class="badge badge-green">{{ bc }}</span>
+              {% else %}<span class="badge badge-gray">{{ bc }}</span>{% endif %}
+            </td>
+            <td>
+              {% if phones %}
+              <button type="button" onclick="sendSingleWhatsApp({{ p.id }}, '{{ p.party_name|replace("'", "\\'") }}', this)" 
+                      class="btn btn-primary" style="background:#25D366;border-color:#25D366;padding:5px 12px;font-size:11px;white-space:nowrap;">
+                💬 Send
+              </button>
+              {% else %}
+              <button class="btn btn-outline" style="padding:5px 12px;font-size:11px;opacity:0.5;" disabled>
+                ⚠️ No Phone
+              </button>
+              {% endif %}
+            </td>
+            <td>
+              <div style="display: flex; gap: 6px;">
+                <a href="{{ url_for('party_detail', pid=p.id) }}" class="btn btn-outline" style="padding:4px 10px;font-size:11px;">View</a>
+                <button onclick="deleteParty({{ p.id }}, '{{ p.party_name|replace("'", "\\'") }}')" class="btn btn-danger" style="padding:4px 10px;font-size:11px;">🗑️</button>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" style="text-align:center;padding:60px;color:var(--muted);">
+              <div style="font-size:48px;margin-bottom:12px;">🔍</div>
+              <div style="font-size:16px;margin-bottom:8px;">No records found</div>
+              <div style="font-size:13px;">Try adjusting your search or filters</div>
+              <div style="margin-top:16px;">
+                <a href="{{ url_for('parties') }}" class="btn btn-primary">Clear All Filters</a>
+                <a href="{{ url_for('party_add') }}" class="btn btn-outline">➕ Add New Party</a>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+  
+  <!-- Pagination -->
+  {% if pagination.pages > 1 %}
+  <div style="padding:12px 16px;border-top:1px solid var(--border);">
+    <div class="pagination">
+      {% if pagination.has_prev %}
+      <a href="{{ url_for('parties', page=pagination.prev_num, bucket=bucket, q=search, overdue=overdue_filter, sort=sort) }}" class="page-btn">‹ Prev</a>
+      {% endif %}
+      {% for pg in pagination.iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2) %}
+        {% if pg %}
+          <a href="{{ url_for('parties', page=pg, bucket=bucket, q=search, overdue=overdue_filter, sort=sort) }}" class="page-btn {% if pg==pagination.page %}active{% endif %}">{{ pg }}</a>
+        {% else %}
+          <span class="page-btn" style="cursor:default;">…</span>
+        {% endif %}
+      {% endfor %}
+      {% if pagination.has_next %}
+      <a href="{{ url_for('parties', page=pagination.next_num, bucket=bucket, q=search, overdue=overdue_filter, sort=sort) }}" class="page-btn">Next ›</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Hidden form for single WhatsApp message -->
+<form id="single-whatsapp-form" method="post" style="display:none;">
+  <input type="hidden" name="phone_number" id="single-whatsapp-phone">
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let selectedParties = new Set();
+let currentOpenDropdown = null;
+
+function togglePhoneDropdown(container) {
+  const dropdown = container.querySelector('.phone-dropdown-menu');
+  if (!dropdown) return;
+  
+  // Close any open dropdown
+  if (currentOpenDropdown && currentOpenDropdown !== dropdown) {
+    currentOpenDropdown.style.display = 'none';
+  }
+  
+  // Toggle current dropdown
+  dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
+  currentOpenDropdown = dropdown.style.display === 'block' ? dropdown : null;
+}
+
+function selectPhoneNumber(phoneNumber, element) {
+  const container = element.closest('.phone-dropdown-container');
+  const selectedDisplay = container.querySelector('.selected-phone-number');
+  const dropdown = container.querySelector('.phone-dropdown-menu');
+  
+  // Update the displayed phone number
+  selectedDisplay.textContent = phoneNumber;
+  
+  // Close the dropdown
+  if (dropdown) {
+    dropdown.style.display = 'none';
+    currentOpenDropdown = null;
+  }
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.phone-dropdown-container')) {
+    if (currentOpenDropdown) {
+      currentOpenDropdown.style.display = 'none';
+      currentOpenDropdown = null;
+    }
+  }
+});
+
+function sendSingleWhatsApp(partyId, partyName, button) {
+  // Find the phone number from the selected display in the same row
+  const row = button.closest('tr');
+  const phoneDisplay = row.querySelector('.selected-phone-number');
+  let phoneNumber = phoneDisplay ? phoneDisplay.textContent : null;
+  
+  if (!phoneNumber) {
+    alert('No phone number available for this party.');
+    return;
+  }
+  
+  if (confirm(`📱 Send WhatsApp reminder to ${partyName} at ${phoneNumber}?\n\nMake sure the phone number is correct.`)) {
+    // Create form and submit
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `/send-whatsapp/${partyId}`;
+    
+    // Add phone number field
+    const phoneInput = document.createElement('input');
+    phoneInput.type = 'hidden';
+    phoneInput.name = 'phone_number';
+    phoneInput.value = phoneNumber;
+    form.appendChild(phoneInput);
+    
+    document.body.appendChild(form);
+    form.submit();
+  }
+}
+
+function filterByBucket(value) {
+  const url = new URL(window.location.href);
+  if (value) url.searchParams.set('bucket', value);
+  else url.searchParams.delete('bucket');
+  url.searchParams.set('page', '1');
+  window.location.href = url.toString();
+}
+
+function filterByOverdue(value) {
+  const url = new URL(window.location.href);
+  if (value) url.searchParams.set('overdue', value);
+  else url.searchParams.delete('overdue');
+  url.searchParams.set('page', '1');
+  window.location.href = url.toString();
+}
+
+function filterBySort(value) {
+  const url = new URL(window.location.href);
+  if (value) url.searchParams.set('sort', value);
+  else url.searchParams.delete('sort');
+  window.location.href = url.toString();
+}
+
+function deleteParty(partyId, partyName) {
+  event.stopPropagation();
+  if (confirm(`⚠️ Are you sure you want to delete "${partyName}"?\n\nThis action cannot be undone!`)) {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `/party/${partyId}/delete`;
+    document.body.appendChild(form);
+    form.submit();
+  }
+}
+
+function toggleSelectAll() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  const checkboxes = document.querySelectorAll('.party-checkbox');
+  
+  checkboxes.forEach(checkbox => {
+    if (!checkbox.disabled) {
+      checkbox.checked = selectAllCheckbox.checked;
+      if (selectAllCheckbox.checked) {
+        selectedParties.add(checkbox.value);
+      } else {
+        selectedParties.delete(checkbox.value);
+      }
+    }
+  });
+  
+  updateBulkActions();
+}
+
+function updateBulkActions() {
+  const checkboxes = document.querySelectorAll('.party-checkbox:checked');
+  const count = checkboxes.length;
+  const bulkActions = document.getElementById('bulk-actions');
+  const selectedCountSpan = document.getElementById('selected-count');
+  
+  if (count > 0) {
+    bulkActions.style.display = 'block';
+    selectedCountSpan.textContent = count;
+  } else {
+    bulkActions.style.display = 'none';
+  }
+}
+
+function selectAll() {
+  const checkboxes = document.querySelectorAll('.party-checkbox');
+  checkboxes.forEach(checkbox => {
+    if (!checkbox.disabled) {
+      checkbox.checked = true;
+      selectedParties.add(checkbox.value);
+    }
+  });
+  document.getElementById('select-all-checkbox').checked = true;
+  updateBulkActions();
+}
+
+function deselectAll() {
+  const checkboxes = document.querySelectorAll('.party-checkbox');
+  checkboxes.forEach(checkbox => {
+    checkbox.checked = false;
+    selectedParties.delete(checkbox.value);
+  });
+  document.getElementById('select-all-checkbox').checked = false;
+  updateBulkActions();
+}
+
+function cancelBulk() {
+  deselectAll();
+  updateBulkActions();
+}
+
+function sendBulkWhatsApp() {
+  const selectedCount = document.querySelectorAll('.party-checkbox:checked').length;
+  if (selectedCount === 0) {
+    alert('Please select at least one party to send WhatsApp messages.');
+    return;
+  }
+  
+  if (confirm(`📱 You are about to send WhatsApp reminders to ${selectedCount} party/parties.\n\nThis action cannot be undone. Continue?`)) {
+    document.getElementById('bulk-form').submit();
+  }
+}
+
+// Add event listeners to checkboxes
+document.querySelectorAll('.party-checkbox').forEach(checkbox => {
+  checkbox.addEventListener('change', function() {
+    if (this.checked) {
+      selectedParties.add(this.value);
+    } else {
+      selectedParties.delete(this.value);
+      document.getElementById('select-all-checkbox').checked = false;
+    }
+    updateBulkActions();
+  });
+});
+
+// Initialize filter dropdowns with current values
+document.addEventListener('DOMContentLoaded', function() {
+  const bucketFilter = document.getElementById('bucket-filter');
+  const overdueFilter = document.getElementById('overdue-filter');
+  const sortFilter = document.getElementById('sort-filter');
+  
+  if (bucketFilter && '{{ bucket }}') bucketFilter.value = '{{ bucket }}';
+  if (overdueFilter && '{{ overdue_filter }}') overdueFilter.value = '{{ overdue_filter }}';
+  if (sortFilter && '{{ sort }}') sortFilter.value = '{{ sort }}';
+});
+</script>
+{% endblock %}

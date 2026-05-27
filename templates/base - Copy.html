@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}WGS Payment Reminder{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #0d0f14;
+  --surface: #151820;
+  --surface2: #1c2030;
+  --border: rgba(255,255,255,0.07);
+  --text: #e8eaf0;
+  --muted: #7a82a0;
+  --accent: #6c63ff;
+  --accent2: #ff6584;
+  --green: #2dd4bf;
+  --yellow: #fbbf24;
+  --red: #f87171;
+  --orange: #fb923c;
+  --radius: 14px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; }
+
+/* Sidebar */
+.sidebar {
+  width: 240px; min-height:100vh; background:var(--surface);
+  border-right:1px solid var(--border); display:flex; flex-direction:column;
+  position:fixed; left:0; top:0; z-index:100;
+}
+.sidebar-brand {
+  padding:24px 20px 20px;
+  border-bottom:1px solid var(--border);
+}
+.brand-badge {
+  display:inline-block; background:var(--accent); color:#fff;
+  font-size:10px; font-weight:700; padding:2px 8px; border-radius:4px;
+  letter-spacing:1px; margin-bottom:8px;
+}
+.brand-name { font-family:'Space Grotesk',sans-serif; font-size:18px; font-weight:700; }
+.brand-sub  { font-size:11px; color:var(--muted); margin-top:2px; }
+
+.sidebar-nav { flex:1; padding:16px 12px; }
+.nav-section { font-size:10px; color:var(--muted); letter-spacing:1.5px; text-transform:uppercase; padding:12px 8px 6px; }
+.nav-item {
+  display:flex; align-items:center; gap:10px; padding:10px 12px;
+  border-radius:10px; text-decoration:none; color:var(--muted);
+  font-size:14px; font-weight:500; transition:.2s; margin-bottom:2px;
+}
+.nav-item:hover { background:var(--surface2); color:var(--text); }
+.nav-item.active { background:rgba(108,99,255,.18); color:var(--accent); }
+.nav-item .icon { width:18px; text-align:center; font-size:16px; }
+
+.sidebar-footer {
+  padding:16px; border-top:1px solid var(--border);
+  font-size:12px; color:var(--muted);
+}
+
+/* Main */
+.main { margin-left:240px; flex:1; min-height:100vh; }
+.topbar {
+  background:var(--surface); border-bottom:1px solid var(--border);
+  padding:0 28px; height:60px; display:flex; align-items:center;
+  justify-content:space-between; position:sticky; top:0; z-index:50;
+}
+.topbar-title { font-family:'Space Grotesk',sans-serif; font-size:20px; font-weight:700; }
+.topbar-right { display:flex; align-items:center; gap:12px; }
+
+.content { padding:28px; }
+
+/* Cards */
+.card {
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:24px;
+}
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:24px; }
+.stat-card {
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:20px 24px;
+  position:relative; overflow:hidden;
+}
+.stat-card::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:3px;
+  background:var(--accent-color, var(--accent));
+}
+.stat-label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; }
+.stat-value { font-family:'Space Grotesk',sans-serif; font-size:28px; font-weight:700; margin-top:6px; color:var(--val-color, var(--text)); }
+.stat-sub  { font-size:12px; color:var(--muted); margin-top:4px; }
+
+/* Bucket rows */
+.bucket-row {
+  display:flex; align-items:center; gap:12px; padding:14px 16px;
+  border-radius:10px; margin-bottom:8px; background:var(--surface2);
+  border:1px solid var(--border); cursor:pointer; transition:.15s;
+  text-decoration:none; color:inherit;
+}
+.bucket-row:hover { border-color:var(--accent); }
+.bucket-name { width:140px; font-weight:600; font-size:14px; }
+.bucket-badge {
+  font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px;
+  background:rgba(255,255,255,.08); color:var(--muted);
+}
+.bucket-bar-wrap { flex:1; height:8px; background:rgba(255,255,255,.05); border-radius:4px; }
+.bucket-bar { height:100%; border-radius:4px; transition:width .6s; }
+.bucket-amount { width:120px; text-align:right; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:14px; }
+
+/* Tables */
+.table-wrap { overflow-x:auto; border-radius:var(--radius); border:1px solid var(--border); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+thead { background:var(--surface2); }
+th { padding:12px 16px; text-align:left; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; font-weight:600; white-space:nowrap; }
+td { padding:12px 16px; border-top:1px solid var(--border); }
+tr:hover td { background:rgba(255,255,255,.02); }
+
+/* Badges */
+.badge { display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+.badge-red    { background:rgba(248,113,113,.15); color:#f87171; }
+.badge-orange { background:rgba(251,146,60,.15);  color:#fb923c; }
+.badge-yellow { background:rgba(251,191,36,.15);  color:#fbbf24; }
+.badge-green  { background:rgba(45,212,191,.15);  color:#2dd4bf; }
+.badge-blue   { background:rgba(108,99,255,.15);  color:#a78bfa; }
+.badge-gray   { background:rgba(255,255,255,.08); color:var(--muted); }
+
+/* Buttons */
+.btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:10px; font-size:14px; font-weight:600; cursor:pointer; border:none; transition:.2s; text-decoration:none; }
+.btn-primary { background:var(--accent); color:#fff; }
+.btn-primary:hover { background:#5a52e8; }
+.btn-outline { background:transparent; border:1px solid var(--border); color:var(--text); }
+.btn-outline:hover { background:var(--surface2); }
+.btn-danger  { background:rgba(248,113,113,.15); color:#f87171; border:1px solid rgba(248,113,113,.2); }
+.btn-success { background:rgba(45,212,191,.15);  color:#2dd4bf; border:1px solid rgba(45,212,191,.2); }
+
+/* Forms */
+.form-group { margin-bottom:18px; }
+.form-label { display:block; font-size:12px; color:var(--muted); font-weight:600; margin-bottom:6px; text-transform:uppercase; letter-spacing:.8px; }
+.form-input {
+  width:100%; background:var(--surface2); border:1px solid var(--border);
+  border-radius:10px; padding:10px 14px; color:var(--text); font-size:14px;
+  font-family:'DM Sans',sans-serif; outline:none; transition:.2s;
+}
+.form-input:focus { border-color:var(--accent); }
+.form-textarea { resize:vertical; min-height:120px; }
+
+/* Alerts */
+.alert { padding:12px 16px; border-radius:10px; margin-bottom:16px; font-size:14px; }
+.alert-success { background:rgba(45,212,191,.1); border:1px solid rgba(45,212,191,.3); color:#2dd4bf; }
+.alert-error   { background:rgba(248,113,113,.1); border:1px solid rgba(248,113,113,.3); color:#f87171; }
+
+/* Charts */
+.charts-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+.chart-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; }
+.chart-title { font-family:'Space Grotesk',sans-serif; font-size:15px; font-weight:700; margin-bottom:16px; }
+
+/* Sync badge */
+.sync-btn { display:inline-flex; align-items:center; gap:6px; font-size:12px; }
+.pulse { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* Pagination */
+.pagination { display:flex; gap:4px; align-items:center; justify-content:center; padding:16px 0; }
+.page-btn { padding:6px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface2); color:var(--muted); cursor:pointer; text-decoration:none; font-size:13px; }
+.page-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.page-btn:hover { color:var(--text); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:3px; }
+
+/* Bucket colors */
+.bc-0 { --bar-color:#2dd4bf; }
+.bc-1 { --bar-color:#60a5fa; }
+.bc-2 { --bar-color:#fbbf24; }
+.bc-3 { --bar-color:#fb923c; }
+.bc-4 { --bar-color:#f87171; }
+.bc-5 { --bar-color:#e879f9; }
+
+@media(max-width:768px){
+  .sidebar{width:60px;}
+  .brand-name,.brand-sub,.nav-section,.nav-item span{display:none;}
+  .main{margin-left:60px;}
+  .charts-grid{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+<nav class="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-badge">WGS</div>
+    <div class="brand-name">Payment Tracker</div>
+    <div class="brand-sub">Aging & Reminder System</div>
+  </div>
+  <div class="sidebar-nav">
+    <div class="nav-section">Main</div>
+    <a href="{{ url_for('index') }}" class="nav-item {% if request.endpoint=='index' %}active{% endif %}">
+      <span class="icon">📊</span><span>Dashboard</span>
+    </a>
+    <a href="{{ url_for('parties') }}" class="nav-item {% if request.endpoint=='parties' %}active{% endif %}">
+      <span class="icon">👥</span><span>Parties</span>
+    </a>
+    <div class="nav-section">Data</div>
+    <a href="{{ url_for('upload') }}" class="nav-item {% if request.endpoint=='upload' %}active{% endif %}">
+      <span class="icon">📁</span><span>Upload Excel</span>
+    </a>
+    <a href="{{ url_for('gsheets') }}" class="nav-item {% if request.endpoint=='gsheets' %}active{% endif %}">
+      <span class="icon">🔗</span><span>Google Sheets</span>
+    </a>
+  </div>
+  <div class="sidebar-footer">
+    <div>Welcome, <strong>ADMIN</strong></div>
+    <div style="margin-top:4px;">Payment Reminder v1.0</div>
+  </div>
+</nav>
+
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-title">{% block page_title %}Dashboard{% endblock %}</div>
+    <div class="topbar-right">
+      {% block topbar_right %}
+      <span style="font-size:12px;color:var(--muted);">{{ now.strftime('%d %b %Y') if now else '' }}</span>
+      {% endblock %}
+    </div>
+  </div>
+  <div class="content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+        <div class="alert alert-{{ 'success' if cat=='success' else 'error' }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script>
+// Pass current date to template filter
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

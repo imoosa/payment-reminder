@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Parties – WGS Payment{% endblock %}
+{% block page_title %}👥 Parties{% endblock %}
+
+{% block topbar_right %}
+<form method="get" style="display:flex;gap:8px;align-items:center;">
+  <input class="form-input" style="width:220px;padding:7px 12px;" name="q" value="{{ search }}" placeholder="Search party name…">
+  <button type="submit" class="btn btn-outline" style="padding:7px 14px;">🔍</button>
+  {% if bucket %}<input type="hidden" name="bucket" value="{{ bucket }}">{% endif %}
+</form>
+{% endblock %}
+
+{% block content %}
+<!-- Bucket Filter Tabs -->
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+  <a href="{{ url_for('parties') }}" class="btn {% if not bucket %}btn-primary{% else %}btn-outline{% endif %}" style="padding:7px 14px;font-size:12px;">All</a>
+  {% for b in bucket_order %}
+  <a href="{{ url_for('parties', bucket=b) }}" class="btn {% if bucket==b %}btn-primary{% else %}btn-outline{% endif %}" style="padding:7px 14px;font-size:12px;">{{ b }}</a>
+  {% endfor %}
+</div>
+
+{% if bucket %}
+<div style="margin-bottom:16px;padding:10px 16px;background:rgba(108,99,255,.1);border:1px solid rgba(108,99,255,.2);border-radius:10px;font-size:13px;">
+  Filtered by: <strong style="color:#a78bfa;">{{ bucket }}</strong>
+  &nbsp;·&nbsp; <a href="{{ url_for('parties') }}" style="color:var(--muted);">Clear filter ×</a>
+</div>
+{% endif %}
+
+<div class="card" style="padding:0;">
+  <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;">
+      {{ pagination.total }} records
+      {% if search %} for "<em>{{ search }}</em>"{% endif %}
+    </div>
+    <div style="font-size:12px;color:var(--muted);">Page {{ pagination.page }} of {{ pagination.pages }}</div>
+  </div>
+  <div class="table-wrap" style="border:none;border-radius:0;">
+    <table>
+      <thead>
+        <tr>
+          <th>Party Name</th>
+          <th>Phone</th>
+          <th>Total Pending</th>
+          <th>Bucket Pending</th>
+          <th>Overdue</th>
+          <th>Bucket</th>
+          <th>View</th>
+          <th>Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in pagination.items %}
+        {% set phones = p.contact.split(',') | map('trim') | select | list if p.contact else [] %}
+        <tr>
+          <td><strong>{{ p.party_name }}</strong></td>
+          <td>
+            {% if phones | length == 0 %}
+              <span style="color:var(--muted);">—</span>
+            {% elif phones | length == 1 %}
+              <a href="tel:{{ phones[0] }}" style="color:var(--text);text-decoration:none;white-space:nowrap;">
+                📞 {{ phones[0] }}
+              </a>
+            {% else %}
+              <div class="phone-dropdown-wrap" style="position:relative;display:inline-block;">
+                <button class="phone-dropdown-btn btn btn-outline" style="padding:4px 10px;font-size:12px;gap:5px;"
+                        onclick="togglePhoneDropdown(this)">
+                  📞 {{ phones | length }} Numbers ▾
+                </button>
+                <div class="phone-dropdown-menu" style="display:none;position:absolute;top:100%;left:0;z-index:200;
+                     min-width:180px;background:var(--surface2);border:1px solid var(--border);
+                     border-radius:10px;padding:6px;margin-top:4px;box-shadow:var(--shadow);">
+                  {% for num in phones %}
+                  <a href="tel:{{ num }}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;
+                       border-radius:7px;text-decoration:none;color:var(--text);font-size:13px;white-space:nowrap;"
+                     onmouseover="this.style.background='var(--surface)'" 
+                     onmouseout="this.style.background='transparent'">
+                    📞 {{ num }}
+                  </a>
+                  {% endfor %}
+                </div>
+              </div>
+            {% endif %}
+          </td>
+          
+          <td style="font-family:'Space Grotesk',sans-serif;font-weight:700;color:#f87171;">
+            {{ p.pending_amount | inr }}
+          </td>
+          <td style="font-family:'Space Grotesk',sans-serif;font-weight:600;">
+            {% if p.bucket_pending and p.bucket_pending > 0 and p.bucket_pending != p.pending_amount %}
+              <span style="color:#fb923c;">{{ p.bucket_pending | inr }}</span>
+              <div style="font-size:10px;color:var(--muted);margin-top:1px;">in {{ p.bucket }}</div>
+            {% else %}
+              <span style="color:var(--muted);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if p.days_overdue > 0 %}
+              <span style="color:{% if p.days_overdue > 180 %}#f87171{% elif p.days_overdue > 120 %}#fb923c{% elif p.days_overdue > 60 %}#fbbf24{% else %}#2dd4bf{% endif %};">
+                {{ p.days_overdue }}d
+              </span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% set bc = p.bucket or '—' %}
+            {% if '180' in bc %}<span class="badge badge-red">{{ bc }}</span>
+            {% elif '120' in bc %}<span class="badge badge-orange">{{ bc }}</span>
+            {% elif '90' in bc %}<span class="badge badge-yellow">{{ bc }}</span>
+            {% elif '60' in bc %}<span class="badge badge-blue">{{ bc }}</span>
+            {% elif '30' in bc %}<span class="badge badge-green">{{ bc }}</span>
+            {% else %}<span class="badge badge-gray">{{ bc }}</span>{% endif %}
+          </td>
+          <td><a href="{{ url_for('party_detail', pid=p.id) }}" class="btn btn-outline" style="padding:4px 12px;font-size:12px;">View</a></td>
+          <td>
+  <div style="display: flex; gap: 8px;">
+    
+    <button onclick="deleteParty({{ p.id }}, '{{ p.party_name }}')" class="btn btn-danger" style="padding:4px 12px;font-size:12px;">🗑️</button>
+  </div>
+</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" style="text-align:center;padding:40px;color:var(--muted);">No records found</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <!-- Pagination -->
+  {% if pagination.pages > 1 %}
+  <div style="padding:12px 16px;border-top:1px solid var(--border);">
+    <div class="pagination">
+      {% if pagination.has_prev %}
+      <a href="{{ url_for('parties', page=pagination.prev_num, bucket=bucket, q=search) }}" class="page-btn">‹ Prev</a>
+      {% endif %}
+      {% for pg in pagination.iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2) %}
+        {% if pg %}
+          <a href="{{ url_for('parties', page=pg, bucket=bucket, q=search) }}" class="page-btn {% if pg==pagination.page %}active{% endif %}">{{ pg }}</a>
+        {% else %}
+          <span class="page-btn" style="cursor:default;">…</span>
+        {% endif %}
+      {% endfor %}
+      {% if pagination.has_next %}
+      <a href="{{ url_for('parties', page=pagination.next_num, bucket=bucket, q=search) }}" class="page-btn">Next ›</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function togglePhoneDropdown(btn) {
+  const menu = btn.nextElementSibling;
+  const isOpen = menu.style.display === 'block';
+  document.querySelectorAll('.phone-dropdown-menu').forEach(m => m.style.display = 'none');
+  if (!isOpen) menu.style.display = 'block';
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.phone-dropdown-wrap')) {
+    document.querySelectorAll('.phone-dropdown-menu').forEach(m => m.style.display = 'none');
+  }
+});
+
+function deleteParty(partyId, partyName) {
+  if (confirm(`⚠️ Are you sure you want to delete "${partyName}"?\n\nThis action cannot be undone!`)) {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `/party/${partyId}/delete`;
+    document.body.appendChild(form);
+    form.submit();
+  }
+}
+</script>
+{% endblock %}
