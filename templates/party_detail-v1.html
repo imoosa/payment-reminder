@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="party-detail-grid">
+<div class="grid party-detail-grid" style="display:grid;grid-template-columns:2fr 1fr;gap:20px;">
   <!-- Left Column - Party Details -->
   <div>
     <div class="card" style="margin-bottom:20px;">
@@ -127,20 +127,7 @@
       </div>
 
       {% if party.contact %}
-      {% set phones = party.contact.split(',') | map('trim') | select | list %}
       <form method="post" action="{{ url_for('send_whatsapp_single', party_id=party.id) }}">
-        {% if phones | length > 1 %}
-        <div class="form-group" style="margin-bottom:12px;">
-          <label class="form-label" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">📱 Select Number to Send To</label>
-          <select name="phone_number" class="form-input" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:10px 12px;font-size:14px;cursor:pointer;">
-            {% for phone in phones %}
-            <option value="{{ phone }}">{{ phone }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        {% else %}
-        <input type="hidden" name="phone_number" value="{{ phones[0] if phones else '' }}">
-        {% endif %}
         <button type="submit" class="btn btn-primary" style="width:100%;background:#25D366;border-color:#25D366;padding:12px;">
           📤 Send WhatsApp Reminder
         </button>
@@ -180,17 +167,10 @@
 {% block scripts %}
 <script>
 function sendWhatsApp() {
-  const selectEl = document.querySelector('select[name="phone_number"]');
-  const phone = selectEl ? selectEl.value : '{{ party.contact }}';
-  if (confirm(`📱 Send WhatsApp reminder to ${document.querySelector('.topbar-title span').innerText}?\n\n📞 Number: ${phone}\n\nMake sure the phone number is correct.`)) {
+  if (confirm(`📱 Send WhatsApp reminder to ${document.querySelector('.topbar-title span').innerText}?\n\nMake sure the phone number is correct.`)) {
     const form = document.createElement('form');
     form.method = 'POST';
     form.action = "{{ url_for('send_whatsapp_single', party_id=party.id) }}";
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'phone_number';
-    input.value = phone;
-    form.appendChild(input);
     document.body.appendChild(form);
     form.submit();
   }
