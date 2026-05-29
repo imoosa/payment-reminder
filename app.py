@@ -11,6 +11,11 @@ import requests
 import json
 import re
 import logging
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from _env file
+load_dotenv('_env')
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -18,11 +23,18 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = 'wgs-payment-secret-2024'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///payments.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:@localhost/maktronic_payments'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'static', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+MYSQL_HOST = os.environ.get('MYSQL_HOST', 'localhost')
+MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
+MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '')
+MYSQL_DATABASE = os.environ.get('MYSQL_DATABASE', 'wgs_payments')
+MYSQL_PORT = os.environ.get('MYSQL_PORT', '3306')
 
 # AiSensy Configuration
 AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ZmM2NjdjMzYyODIyMGUyN2YzN2JmYyIsIm5hbWUiOiJWZXJvZXhpbXVzIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ZjlkZmMwMGE4NDk1Mzc4YmY1ZjI5YyIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzgxNDg5ODh9.vC-f2uQBFylXeQ0Gq1qUYn_u-qM9UDVqhxMqnO7I-aE')
@@ -74,11 +86,11 @@ with app.app_context():
     #db.drop_all() 
     db.create_all()
     # Create default admin user if not exists
-    if not User.query.filter_by(username='admin').first():
-        admin = User(username='admin', password_hash=generate_password_hash('admin123'))
+    if not User.query.filter_by(username='badri').first():
+        admin = User(username='badri', password_hash=generate_password_hash('Badri@53'))
         db.session.add(admin)
         db.session.commit()
-        print("Default admin user created - Username: admin, Password: admin123")
+        print("Default admin user created - Username: badri, Password: Badri@53")
 
 # ── Authentication Decorator ──────────────────────────────────────────────
 def login_required(f):
