@@ -10,6 +10,11 @@ import traceback
 import requests
 import json
 import re
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = 'wgs-payment-secret-2024'
@@ -22,7 +27,7 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # AiSensy Configuration
 AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ZmM2NjdjMzYyODIyMGUyN2YzN2JmYyIsIm5hbWUiOiJWZXJvZXhpbXVzIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ZjlkZmMwMGE4NDk1Mzc4YmY1ZjI5YyIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzgxNDg5ODh9.vC-f2uQBFylXeQ0Gq1qUYn_u-qM9UDVqhxMqnO7I-aE')
 AISENSY_BASE_URL = 'https://backend.aisensy.com/campaign/t1/api/v2'
-WHATSAPP_TEMPLATE_NAME = 'payment_reminder'  # Create this template in AiSensy dashboard
+WHATSAPP_TEMPLATE_NAME = 'payment_reminder'
 
 db = SQLAlchemy(app)
 
@@ -60,12 +65,13 @@ class WhatsAppLog(db.Model):
     message = db.Column(db.Text)
     status = db.Column(db.String(50))
     response = db.Column(db.Text)
+    error_details = db.Column(db.Text)  # Added field for error details
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_bulk = db.Column(db.Boolean, default=False)
     bulk_id = db.Column(db.String(100))
 
 with app.app_context():
-    db.drop_all()
+    #db.drop_all() 
     db.create_all()
     # Create default admin user if not exists
     if not User.query.filter_by(username='admin').first():
@@ -85,6 +91,10 @@ def login_required(f):
     return decorated_function
 
 # ── WhatsApp Helper Functions ──────────────────────────────────────────────
+# In app.py, replace the existing WhatsApp helper functions with these:
+
+# ── WhatsApp Helper Functions (Updated to match app_sqlalchemy.py) ──────────────
+
 def clean_phone_number(phone):
     """Clean and validate phone number for WhatsApp"""
     if not phone:
@@ -97,56 +107,92 @@ def clean_phone_number(phone):
     elif len(cleaned) == 12 and cleaned.startswith('91'):
         pass
     elif len(cleaned) > 12:
-        # Take last 12 digits if longer
         cleaned = cleaned[-12:]
     else:
         return None
     return cleaned
 
 def send_whatsapp_message(party_id, party_name, phone_number, pending_amount, bucket_name, bucket_amount):
-    """Send WhatsApp message using AiSensy API"""
+    """Send WhatsApp message using AiSensy API (matching app_sqlalchemy.py pattern)"""
     cleaned_phone = clean_phone_number(phone_number)
     if not cleaned_phone:
-        return {'success': False, 'error': 'Invalid phone number'}
+        error_msg = f'Invalid phone number: {phone_number}'
+        logger.error(error_msg)
+        return {'success': False, 'error': error_msg, 'phone': phone_number}
     
     # Format amount in Indian Rupees
     formatted_pending = f"₹{pending_amount:,.2f}"
     formatted_bucket_amount = f"₹{bucket_amount:,.2f}"
     
-    # Template variables in order
+    # Template variables as per app_sqlalchemy.py pattern
     variables = [
-        party_name,           # {{1}} - Party name
-        formatted_pending,    # {{2}} - Total Amount Pending
-        bucket_name,          # {{3}} - Aging bucket days
-        formatted_bucket_amount  # {{4}} - Aging bucket amount
+        party_name,
+        formatted_pending,
+        bucket_name,
+        formatted_bucket_amount
     ]
     
+    # Payload structure matching app_sqlalchemy.py
     payload = {
         "apiKey": AISENSY_API_KEY,
         "campaignName": WHATSAPP_TEMPLATE_NAME,
         "destination": cleaned_phone,
         "userName": party_name,
         "source": "api",
-        "templateParams": variables,
+        "templateParams": variables,  # Using templateParams (not templateParams in a different format)
         "tags": ["payment_reminder", "wgs_system"],
         "attributes": {}
     }
     
+    logger.info(f"Sending WhatsApp to {cleaned_phone}")
+    logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
+    
     try:
+        # Use the same URL pattern as app_sqlalchemy.py - no '/send' suffix
         response = requests.post(
-            f"{AISENSY_BASE_URL}/send",
+            AISENSY_BASE_URL,  # Already ends with /api/v2
             json=payload,
             headers={'Content-Type': 'application/json'},
             timeout=30
         )
         
+        logger.info(f"Response status: {response.status_code}")
+        logger.info(f"Response body: {response.text[:500] if response.text else 'empty'}")
+        
         if response.status_code == 200:
             result = response.json()
-            return {'success': True, 'response': result}
+            logger.info(f"Success response: {result}")
+            return {
+                'success': True, 
+                'response': result, 
+                'phone': cleaned_phone,
+                'message_id': result.get('id', '')  # Some APIs return message ID
+            }
         else:
-            return {'success': False, 'error': f'HTTP {response.status_code}: {response.text}'}
+            error_msg = f'HTTP {response.status_code}: {response.text[:200]}'
+            logger.error(error_msg)
+            return {
+                'success': False, 
+                'error': error_msg, 
+                'response_text': response.text[:500], 
+                'phone': cleaned_phone
+            }
+            
+    except requests.exceptions.Timeout:
+        error_msg = 'Request timeout - API took too long to respond'
+        logger.error(error_msg)
+        return {'success': False, 'error': error_msg, 'phone': cleaned_phone}
+        
+    except requests.exceptions.ConnectionError as e:
+        error_msg = f'Connection error: {str(e)}'
+        logger.error(error_msg)
+        return {'success': False, 'error': error_msg, 'phone': cleaned_phone}
+        
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        error_msg = f'Unexpected error: {str(e)}'
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        return {'success': False, 'error': error_msg, 'phone': cleaned_phone}
 
 def send_bulk_whatsapp_messages(parties, bulk_id=None):
     """Send bulk WhatsApp messages to multiple parties"""
@@ -159,11 +205,28 @@ def send_bulk_whatsapp_messages(parties, bulk_id=None):
         phone = party.contact.split(',')[0].strip() if party.contact else None
         
         if not phone:
+            error_msg = 'No phone number available'
+            logger.warning(f"No phone for party {party.party_name}")
+            
+            # Log failure
+            log = WhatsAppLog(
+                party_id=party.id,
+                party_name=party.party_name,
+                phone_number='',
+                message=f"Failed: {error_msg}",
+                status='failed',
+                response=json.dumps({'error': error_msg}),
+                error_details=error_msg,
+                is_bulk=True,
+                bulk_id=bulk_id
+            )
+            db.session.add(log)
+            
             results.append({
                 'party_id': party.id,
                 'party_name': party.party_name,
                 'success': False,
-                'error': 'No phone number available'
+                'error': error_msg
             })
             fail_count += 1
             continue
@@ -181,13 +244,17 @@ def send_bulk_whatsapp_messages(parties, bulk_id=None):
         )
         
         # Log the attempt
+        error_detail = result.get('error') if not result['success'] else None
+        response_detail = result.get('response') if result['success'] else result.get('response_text', result.get('error', ''))
+        
         log = WhatsAppLog(
             party_id=party.id,
             party_name=party.party_name,
             phone_number=phone,
-            message=f"Reminder for {party.party_name}: Pending {party.pending_amount}",
+            message=f"Reminder for {party.party_name}: Pending ₹{party.pending_amount:,.2f}",
             status='success' if result['success'] else 'failed',
             response=json.dumps(result),
+            error_details=error_detail,
             is_bulk=True,
             bulk_id=bulk_id
         )
@@ -198,16 +265,20 @@ def send_bulk_whatsapp_messages(parties, bulk_id=None):
             results.append({
                 'party_id': party.id,
                 'party_name': party.party_name,
-                'success': True
+                'success': True,
+                'phone': phone
             })
+            logger.info(f"Successfully sent to {party.party_name} at {phone}")
         else:
             fail_count += 1
             results.append({
                 'party_id': party.id,
                 'party_name': party.party_name,
                 'success': False,
-                'error': result.get('error', 'Unknown error')
+                'error': result.get('error', 'Unknown error'),
+                'phone': phone
             })
+            logger.error(f"Failed to send to {party.party_name}: {result.get('error')}")
     
     db.session.commit()
     
@@ -508,51 +579,6 @@ def change_password():
     return redirect(url_for('index'))
 
 # ── WhatsApp Routes ─────────────────────────────────────────────────────
-"""@app.route('/send-whatsapp/<int:party_id>', methods=['POST'])
-@login_required
-def send_whatsapp_single(party_id):
-    
-    party = Party.query.get_or_404(party_id)
-    
-    # Get primary phone number
-    phone = party.contact.split(',')[0].strip() if party.contact else None
-    
-    if not phone:
-        flash(f'❌ No phone number found for {party.party_name}', 'error')
-        return redirect(url_for('party_detail', pid=party_id))
-    
-    # Get bucket amount (use bucket_pending if available, otherwise pending_amount)
-    bucket_amount = party.bucket_pending if party.bucket_pending > 0 else party.pending_amount
-    
-    result = send_whatsapp_message(
-        party.id,
-        party.party_name,
-        phone,
-        party.pending_amount,
-        party.bucket,
-        bucket_amount
-    )
-    
-    # Log the attempt
-    log = WhatsAppLog(
-        party_id=party.id,
-        party_name=party.party_name,
-        phone_number=phone,
-        message=f"Reminder: Pending {party.pending_amount}",
-        status='success' if result['success'] else 'failed',
-        response=json.dumps(result),
-        is_bulk=False
-    )
-    db.session.add(log)
-    db.session.commit()
-    
-    if result['success']:
-        flash(f'✅ WhatsApp reminder sent to {party.party_name}!', 'success')
-    else:
-        flash(f'❌ Failed to send message to {party.party_name}: {result.get("error", "Unknown error")}', 'error')
-    
-    return redirect(url_for('party_detail', pid=party_id))"""
-
 @app.route('/send-whatsapp/<int:party_id>', methods=['POST'])
 @login_required
 def send_whatsapp_single(party_id):
@@ -586,9 +612,10 @@ def send_whatsapp_single(party_id):
         party_id=party.id,
         party_name=party.party_name,
         phone_number=phone,
-        message=f"Reminder: Pending {party.pending_amount}",
+        message=f"Reminder: Pending ₹{party.pending_amount:,.2f}",
         status='success' if result['success'] else 'failed',
         response=json.dumps(result),
+        error_details=result.get('error') if not result['success'] else None,
         is_bulk=False
     )
     db.session.add(log)
@@ -657,7 +684,7 @@ def test_whatsapp():
         return jsonify({'success': False, 'error': 'No test number provided'})
     
     result = send_whatsapp_message(
-        0,  # dummy party_id
+        0,
         'Test Customer',
         test_number,
         5000.00,
@@ -671,7 +698,7 @@ def test_whatsapp():
 @login_required
 def index():
     data = get_dashboard_data()
-    return render_template('dashboard.html', data=data, username=session.get('username'))
+    return render_template('dashboard.html', data=data, username=session.get('username'), now=datetime.now())
 
 @app.route('/upload', methods=['GET', 'POST'])
 @login_required
